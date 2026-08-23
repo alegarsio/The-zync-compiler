@@ -1,6 +1,14 @@
-#include "../include/codegen.hpp"
+#include <string>
+#include <iostream>
 #include <sstream>
+#include <vector>
+#include <unordered_map>
 #include <unordered_set>
+#include <cctype>
+#include <filesystem>
+#include "../include/codegen.hpp"
+
+namespace fs = std::filesystem;
 
 static const std::unordered_set<std::string> cppPrimitiveTypes = {
     "int", "double", "float", "char", "bool", "void", "long", "short", "signed", "unsigned"
@@ -44,6 +52,14 @@ CodeGen::CodeGen(const ProgramNode* program)
         }
         for (const auto& rec : root->records) {
             recordMap[rec->name] = rec.get();
+        }
+        for (const auto& pkg : root->packages) {
+            for (const auto& m : pkg->members) {
+                if (auto rec = dynamic_cast<const RecordNode*>(m.get())) {
+                    recordMap[pkg->name + "::" + rec->name] = rec;
+                    recordMap[rec->name] = rec;
+                }
+            }
         }
         for (const auto& im : root->impls) {
             if (!im->traitName.empty()) {
@@ -98,6 +114,12 @@ std::string CodeGen::convertType(const std::string& zyType) {
         }
         res += ">";
         return res;
+    }
+
+    if (zyType.rfind("vector<", 0) == 0 && zyType.back() == '>') {
+        needsVector = true;
+        std::string inner = zyType.substr(7, zyType.size() - 8);
+        return "std::vector<" + convertType(inner) + ">";
     }
 
     if (zyType.rfind("array<", 0) == 0 && zyType.back() == '>') {
@@ -313,8 +335,7 @@ std::string CodeGen::genExpression(const ExpressionNode* expr) {
 
     if (auto lit = dynamic_cast<const LiteralNode*>(expr)) {
         if (lit->litType == LiteralType::STRING) {
-            needsString = true;
-            return "std::string(\"" + lit->value + "\")";
+            return "\"" + lit->value + "\"";
         }
         if (lit->litType == LiteralType::CHAR) {
             return "'" + lit->value + "'";
@@ -333,6 +354,11 @@ std::string CodeGen::genExpression(const ExpressionNode* expr) {
         }
         if (id->name == "_") {
             return "";
+        }
+        if (id->name.rfind("vector<", 0) == 0 && id->name.back() == '>') {
+            needsVector = true;
+            std::string inner = id->name.substr(7, id->name.size() - 8);
+            return "std::vector<" + convertType(inner) + ">{}";
         }
         if (id->name.rfind("array<", 0) == 0 && id->name.back() == '>') {
             needsVector = true;
@@ -364,14 +390,18 @@ std::string CodeGen::genExpression(const ExpressionNode* expr) {
     if (auto scopedId = dynamic_cast<const ScopedIdentifierNode*>(expr)) {
         std::ostringstream out;
         for (size_t i = 0; i < scopedId->path.size(); ++i) {
-            std::string seg = scopedId->path[i];
-            if (seg.rfind("array<", 0) == 0 && seg.back() == '>') {
+            std::string segment = scopedId->path[i];
+            if (segment.rfind("vector<", 0) == 0 && segment.back() == '>') {
                 needsVector = true;
-                std::string inner = seg.substr(6, seg.size() - 7);
-                out << "std::vector<" + convertType(inner) + ">{}";
-            } else if (seg.rfind("map<", 0) == 0 && seg.back() == '>') {
+                std::string inner = segment.substr(7, segment.size() - 8);
+                out << "std::vector<" + convertType(inner) + ">";
+            } else if (segment.rfind("array<", 0) == 0 && segment.back() == '>') {
+                needsVector = true;
+                std::string inner = segment.substr(6, segment.size() - 7);
+                out << "std::vector<" + convertType(inner) + ">";
+            } else if (segment.rfind("map<", 0) == 0 && segment.back() == '>') {
                 needsMap = true;
-                std::string inner = seg.substr(4, seg.size() - 5);
+                std::string inner = segment.substr(4, segment.size() - 5);
                 int depth = 0;
                 size_t commaPos = std::string::npos;
                 for (size_t j = 0; j < inner.size(); ++j) {
@@ -386,16 +416,16 @@ std::string CodeGen::genExpression(const ExpressionNode* expr) {
                     std::string keyType = inner.substr(0, commaPos);
                     std::string valType = inner.substr(commaPos + 1);
                     while (!valType.empty() && valType[0] == ' ') valType.erase(0, 1);
-                    out << "std::map<" + convertType(keyType) + ", " + convertType(valType) + ">{}";
+                    out << "std::map<" + convertType(keyType) + ", " + convertType(valType) + ">";
                 }
             } else {
-                size_t genPos = seg.find('<');
-                if (genPos != std::string::npos && seg.back() == '>') {
-                    std::string base = seg.substr(0, genPos);
-                    std::string inner = seg.substr(genPos + 1, seg.size() - genPos - 2);
+                size_t genPos = segment.find('<');
+                if (genPos != std::string::npos && segment.back() == '>') {
+                    std::string base = segment.substr(0, genPos);
+                    std::string inner = segment.substr(genPos + 1, segment.size() - genPos - 2);
                     out << sanitizeName(base) << "<" << convertType(inner) << ">";
                 } else {
-                    out << sanitizeName(seg);
+                    out << sanitizeName(segment);
                 }
             }
             if (i + 1 < scopedId->path.size()) {
@@ -472,7 +502,7 @@ std::string CodeGen::genExpression(const ExpressionNode* expr) {
     if (auto arrLit = dynamic_cast<const ArrayLiteralNode*>(expr)) {
         needsVector = true;
         std::ostringstream out;
-        out << "{";
+        out << "std::vector{";
         for (size_t i = 0; i < arrLit->elements.size(); ++i) {
             out << genExpression(arrLit->elements[i].get());
             if (i + 1 < arrLit->elements.size()) {
@@ -723,6 +753,16 @@ std::string CodeGen::genStatement(const StatementNode* stmt, int indentLevel) {
     }
 
     if (auto forNode = dynamic_cast<const ForNode*>(stmt)) {
+        if (forNode->kind == ForKind::FOR_RANGE) {
+            std::string varName = forNode->iteratorVar == "_" ? "__unused" : sanitizeName(forNode->iteratorVar);
+            out << ind << "for (auto&& " << varName << " : " << genExpression(forNode->iterable.get()) << ") {\n";
+            for (const auto& s : forNode->body) {
+                out << genStatement(s.get(), indentLevel + 1);
+            }
+            out << ind << "}\n";
+            return out.str();
+        }
+
         if (forNode->kind == ForKind::INFINITE) {
             out << ind << "while (true) {\n";
             for (const auto& s : forNode->body) {
@@ -910,6 +950,24 @@ std::string CodeGen::genRecordDefinition(const RecordNode* rec, int indentLevel)
 }
 
 std::string CodeGen::genPackage(const PackageNode* pkg, int indentLevel) {
+    if (pkg->name == "main") {
+        std::ostringstream out;
+        for (const auto& member : pkg->members) {
+            if (auto tr = dynamic_cast<const TraitNode*>(member.get())) {
+                out << genTraitDefinition(tr, indentLevel) << "\n";
+            } else if (auto rec = dynamic_cast<const RecordNode*>(member.get())) {
+                out << genRecordDefinition(rec, indentLevel) << "\n";
+            } else if (auto fn = dynamic_cast<const FunctionNode*>(member.get())) {
+                out << genFunction(fn, indentLevel) << "\n";
+            } else if (auto subPkg = dynamic_cast<const PackageNode*>(member.get())) {
+                out << genPackage(subPkg, indentLevel) << "\n";
+            } else if (auto stmt = dynamic_cast<const StatementNode*>(member.get())) {
+                out << genStatement(stmt, indentLevel);
+            }
+        }
+        return out.str();
+    }
+
     std::ostringstream out;
     std::string ind = getIndent(indentLevel);
 
@@ -936,15 +994,28 @@ std::string CodeGen::generate() {
     if (!root) return "";
 
     std::ostringstream customIncludes;
-    std::ostringstream usingDirectives;
+    std::unordered_set<std::string> importedPackages;
 
     for (const auto& imp : root->imports) {
         if (imp->kind == ImportKind::CPP_SYS_HEADER) {
             customIncludes << "#include <" << imp->target << ">\n";
         } else if (imp->kind == ImportKind::CPP_USER_HEADER) {
             customIncludes << "#include \"" << imp->target << "\"\n";
+        } else if (imp->kind == ImportKind::ZYNC_FILE) {
+            std::string stem = fs::path(imp->target).stem().string();
+            if (stem != "main" && stem != "std") {
+                importedPackages.insert(stem);
+            }
         } else if (imp->kind == ImportKind::PACKAGE) {
-            usingDirectives << "using namespace " << sanitizeName(imp->target) << ";\n";
+            if (imp->target != "std" && imp->target != "main") {
+                importedPackages.insert(imp->target);
+            }
+        }
+    }
+
+    for (const auto& pkg : root->packages) {
+        if (pkg->name != "main" && pkg->name != "std") {
+            importedPackages.insert(pkg->name);
         }
     }
 
@@ -994,6 +1065,16 @@ std::string CodeGen::generate() {
         functionsCode << genFunction(fn.get(), 0) << "\n";
     }
 
+    for (const auto& pkg : root->packages) {
+        for (const auto& member : pkg->members) {
+            if (auto fn = dynamic_cast<const FunctionNode*>(member.get())) {
+                if (fn->name == "main") {
+                    hasUserMain = true;
+                }
+            }
+        }
+    }
+
     std::ostringstream testFunctions;
     std::ostringstream testRunnerMain;
 
@@ -1005,7 +1086,7 @@ std::string CodeGen::generate() {
 
         for (size_t i = 0; i < root->tests.size(); ++i) {
             const auto& t = root->tests[i];
-            std::string tFn = "__zync_test_" + std::to_string(i);
+            std::string tFn = "__zipc_test_" + std::to_string(i);
 
             testFunctions << "void " << tFn << "() {\n";
             for (const auto& s : t->body) {
@@ -1043,10 +1124,13 @@ std::string CodeGen::generate() {
     fullCode << "#include <chrono>\n";
     fullCode << "#include <tuple>\n";
     fullCode << "#include <cassert>\n";
-    if (needsVector) fullCode << "#include <vector>\n";
+    fullCode << "#include <vector>\n";
+    fullCode << "#include <set>\n";
+    fullCode << "#include <type_traits>\n";
     if (needsMap) fullCode << "#include <map>\n";
 
-    fullCode << "\n";
+    fullCode << "\nusing namespace std;\n\n";
+
     fullCode << "template <typename T, typename E>\n";
     fullCode << "struct Result {\n";
     fullCode << "    bool is_ok;\n";
@@ -1089,11 +1173,11 @@ std::string CodeGen::generate() {
     fullCode << "template <typename E>\n";
     fullCode << "__Err_Holder<E> Err(const E& err) { return __Err_Holder<E>{err}; }\n\n";
 
-    fullCode << "template <typename T>\n";
+    fullCode << "template <typename T, typename = std::enable_if_t<!std::is_same_v<std::decay_t<T>, std::string> && !std::is_same_v<std::decay_t<T>, char*> && !std::is_same_v<std::decay_t<T>, const char*> && !std::is_same_v<std::decay_t<T>, char>>>\n";
     fullCode << "std::string operator+(const std::string& s, const T& v) {\n";
     fullCode << "    std::ostringstream ss; ss << s << v; return ss.str();\n";
     fullCode << "}\n";
-    fullCode << "template <typename T>\n";
+    fullCode << "template <typename T, typename = std::enable_if_t<!std::is_same_v<std::decay_t<T>, std::string> && !std::is_same_v<std::decay_t<T>, char*> && !std::is_same_v<std::decay_t<T>, const char*> && !std::is_same_v<std::decay_t<T>, char>>>\n";
     fullCode << "std::string operator+(const T& v, const std::string& s) {\n";
     fullCode << "    std::ostringstream ss; ss << v << s; return ss.str();\n";
     fullCode << "}\n\n";
@@ -1103,8 +1187,8 @@ std::string CodeGen::generate() {
     }
     fullCode << "\n";
 
-    if (!usingDirectives.str().empty()) {
-        fullCode << usingDirectives.str() << "\n";
+    if (!packagesCode.str().empty()) {
+        fullCode << packagesCode.str() << "\n";
     }
 
     if (!traitForwardDecls.str().empty()) {
@@ -1123,9 +1207,10 @@ std::string CodeGen::generate() {
         fullCode << recordsCode.str() << "\n";
     }
 
-    if (!packagesCode.str().empty()) {
-        fullCode << packagesCode.str() << "\n";
+    for (const auto& pkg : importedPackages) {
+        fullCode << "using namespace " << sanitizeName(pkg) << ";\n";
     }
+    fullCode << "\n";
 
     if (!prototypes.str().empty()) {
         fullCode << prototypes.str() << "\n";

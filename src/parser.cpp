@@ -1,13 +1,14 @@
 #include "../include/parser.hpp"
 #include <unordered_set>
-#include <print>
+
 static const std::unordered_set<std::string> knownCppStdHeaders = {
     "cmath", "cassert", "iostream", "vector", "map", "string", "algorithm", 
     "chrono", "random", "thread", "mutex", "filesystem", "cstdio", 
     "cstdlib", "cstring", "ctime", "memory", "utility", "sstream", 
     "fstream", "functional", "numeric", "cctype", "tuple", "list", 
-    "deque", "set", "unordered_set", "unordered_map", "queue", "stack","array"
+    "deque", "set", "unordered_set", "unordered_map", "queue", "stack", "array"
 };
+
 Parser::Parser(const std::vector<Token>& tokens) : tokens(tokens), index(0) {}
 
 const Token& Parser::current() const {
@@ -36,6 +37,11 @@ std::string Parser::parseType() {
     if (current().type == TokenType::VAR) {
         advance();
         return "var";
+    }
+    if (current().type == TokenType::NUMBER_LITERAL) {
+        std::string num = current().value;
+        advance();
+        return num;
     }
     if (current().type == TokenType::IDENTIFIER) {
         std::string base = current().value;
@@ -69,8 +75,10 @@ std::vector<Parameter> Parser::parseParameterList() {
                 if (current().type == TokenType::IDENTIFIER) {
                     std::string paramName = current().value;
                     advance();
-                    match(TokenType::COLON);
-                    std::string paramType = parseType();
+                    std::string paramType = "";
+                    if (match(TokenType::COLON)) {
+                        paramType = parseType();
+                    }
                     params.push_back({paramName, paramType});
                 }
                 if (!match(TokenType::COMMA)) break;
@@ -86,6 +94,27 @@ std::vector<std::unique_ptr<ImportNode>> Parser::parseImport() {
     advance();
 
     auto parseSingleTarget = [&]() -> std::unique_ptr<ImportNode> {
+        match(TokenType::PKG);
+
+        if (match(TokenType::AT_C)) {
+            if (current().type == TokenType::STRING_LITERAL) {
+                std::string headerName = current().value;
+                advance();
+                return std::make_unique<ImportNode>(ImportKind::CPP_SYS_HEADER, headerName);
+            }
+            if (current().type == TokenType::IDENTIFIER) {
+                std::string headerName = current().value;
+                advance();
+                if (match(TokenType::DOT)) {
+                    if (current().type == TokenType::IDENTIFIER) {
+                        headerName += "." + current().value;
+                        advance();
+                    }
+                }
+                return std::make_unique<ImportNode>(ImportKind::CPP_SYS_HEADER, headerName);
+            }
+        }
+
         if (match(TokenType::LESS)) {
             std::string headerName = "";
             while (current().type != TokenType::GREATER && current().type != TokenType::END_OF_FILE) {
@@ -99,26 +128,51 @@ std::vector<std::unique_ptr<ImportNode>> Parser::parseImport() {
         if (current().type == TokenType::STRING_LITERAL) {
             std::string path = current().value;
             advance();
-            if (path.length() >= 3 && path.substr(path.length() - 3) == ".zy") {
-                return std::make_unique<ImportNode>(ImportKind::ZYNC_FILE, path);
-            } else {
+            if (path.length() >= 4 && (path.substr(path.length() - 4) == ".hpp" || path.substr(path.length() - 2) == ".h")) {
                 return std::make_unique<ImportNode>(ImportKind::CPP_USER_HEADER, path);
             }
+            if (path.length() >= 3 && path.substr(path.length() - 3) == ".zy") {
+                return std::make_unique<ImportNode>(ImportKind::ZYNC_FILE, path);
+            }
+            return std::make_unique<ImportNode>(ImportKind::ZYNC_FILE, path + ".zy");
         }
 
-        if (match(TokenType::PKG) || current().type == TokenType::IDENTIFIER) {
-            std::string pkgName = current().value;
+        if (current().type == TokenType::IDENTIFIER) {
+            std::string path = current().value;
             advance();
-            while (match(TokenType::DOUBLE_COLON)) {
+
+            while (match(TokenType::SLASH)) {
                 if (current().type == TokenType::IDENTIFIER) {
-                    pkgName += "::" + current().value;
+                    path += "/" + current().value;
                     advance();
                 }
             }
-            if (knownCppStdHeaders.find(pkgName) != knownCppStdHeaders.end()) {
-                return std::make_unique<ImportNode>(ImportKind::CPP_SYS_HEADER, pkgName);
+
+            if (path.find('/') != std::string::npos) {
+                if (match(TokenType::DOT)) {
+                    if (current().type == TokenType::IDENTIFIER) {
+                        path += "." + current().value;
+                        advance();
+                    }
+                }
+                if (path.length() < 3 || path.substr(path.length() - 3) != ".zy") {
+                    path += ".zy";
+                }
+                return std::make_unique<ImportNode>(ImportKind::ZYNC_FILE, path);
             }
-            return std::make_unique<ImportNode>(ImportKind::PACKAGE, pkgName);
+
+            while (match(TokenType::DOUBLE_COLON)) {
+                if (current().type == TokenType::IDENTIFIER) {
+                    path += "::" + current().value;
+                    advance();
+                }
+            }
+
+            if (knownCppStdHeaders.find(path) != knownCppStdHeaders.end()) {
+                return std::make_unique<ImportNode>(ImportKind::CPP_SYS_HEADER, path);
+            }
+
+            return std::make_unique<ImportNode>(ImportKind::PACKAGE, path);
         }
 
         return nullptr;
@@ -249,6 +303,13 @@ std::unique_ptr<PackageNode> Parser::parsePackage() {
     if (current().type == TokenType::IDENTIFIER) {
         std::string pkgName = current().value;
         advance();
+
+        while (match(TokenType::DOUBLE_COLON)) {
+            if (current().type == TokenType::IDENTIFIER) {
+                pkgName += "::" + current().value;
+                advance();
+            }
+        }
 
         if (match(TokenType::LBRACE)) {
             auto pkgNode = std::make_unique<PackageNode>(pkgName);
@@ -433,7 +494,22 @@ std::unique_ptr<ExpressionNode> Parser::parsePrimary() {
         return parseArrayLiteral();
     }
     if (current().type == TokenType::LBRACE) {
-        return parseMapLiteral();
+        size_t look = index + 1;
+        int d = 0;
+        bool hasMapColon = false;
+        while (look < tokens.size() && tokens[look].type != TokenType::RBRACE && tokens[look].type != TokenType::END_OF_FILE) {
+            if (tokens[look].type == TokenType::LBRACE) d++;
+            if (tokens[look].type == TokenType::RBRACE) d--;
+            if (tokens[look].type == TokenType::COLON && d == 0) {
+                hasMapColon = true;
+                break;
+            }
+            look++;
+        }
+        if (hasMapColon) {
+            return parseMapLiteral();
+        }
+        return nullptr;
     }
     if (current().type == TokenType::LPAREN) {
         size_t lookAhead = index;
@@ -843,20 +919,46 @@ std::unique_ptr<StatementNode> Parser::parseFor() {
 
     bool hasParen = match(TokenType::LPAREN);
 
-    bool hasSemicolon = false;
     size_t lookAhead = index;
     int parenDepth = 0;
+    bool hasColon = false;
+    bool hasSemicolon = false;
+
     while (lookAhead < tokens.size() && tokens[lookAhead].type != TokenType::LBRACE && tokens[lookAhead].type != TokenType::END_OF_FILE) {
         if (tokens[lookAhead].type == TokenType::LPAREN) parenDepth++;
         if (tokens[lookAhead].type == TokenType::RPAREN) {
-            if (parenDepth == 0) break;
-            parenDepth--;
+            if (parenDepth > 0) parenDepth--;
+        }
+        if (tokens[lookAhead].type == TokenType::COLON) {
+            hasColon = true;
+            break;
         }
         if (tokens[lookAhead].type == TokenType::SEMICOLON) {
             hasSemicolon = true;
             break;
         }
         lookAhead++;
+    }
+
+    if (hasColon) {
+        forNode->kind = ForKind::FOR_RANGE;
+
+        match(TokenType::VAR);
+
+        std::string iterName = current().value;
+        advance();
+
+        match(TokenType::COLON);
+
+        forNode->iteratorVar = iterName;
+        forNode->iterable = parseExpression();
+
+        if (hasParen) {
+            match(TokenType::RPAREN);
+        }
+
+        forNode->body = parseBlock();
+        return forNode;
     }
 
     if (hasSemicolon) {
@@ -1058,40 +1160,129 @@ std::unique_ptr<FunctionNode> Parser::parseFunction() {
 
 std::unique_ptr<ProgramNode> Parser::parseProgram() {
     auto program = std::make_unique<ProgramNode>();
+    std::string currentTopPkg = "";
+    std::unique_ptr<PackageNode> activePkgNode = nullptr;
+
+    auto flushActivePkg = [&]() {
+        if (activePkgNode) {
+            program->packages.push_back(std::move(activePkgNode));
+            activePkgNode = nullptr;
+        }
+    };
+
     while (current().type != TokenType::END_OF_FILE) {
-        if (current().type == TokenType::IMPORT) {
+        if (current().type == TokenType::PKG) {
+            size_t look = index + 1;
+            while (look < tokens.size() && tokens[look].type == TokenType::IDENTIFIER) {
+                look++;
+                if (look < tokens.size() && tokens[look].type == TokenType::DOUBLE_COLON) {
+                    look++;
+                } else {
+                    break;
+                }
+            }
+            if (look < tokens.size() && tokens[look].type == TokenType::LBRACE) {
+                auto pkg = parsePackage();
+                if (pkg) {
+                    if (activePkgNode) {
+                        activePkgNode->members.push_back(std::move(pkg));
+                    } else {
+                        program->packages.push_back(std::move(pkg));
+                    }
+                }
+            } else {
+                advance();
+                if (current().type == TokenType::IDENTIFIER) {
+                    std::string pkgName = current().value;
+                    advance();
+                    while (match(TokenType::DOUBLE_COLON)) {
+                        if (current().type == TokenType::IDENTIFIER) {
+                            pkgName += "::" + current().value;
+                            advance();
+                        }
+                    }
+                    match(TokenType::SEMICOLON);
+
+                    flushActivePkg();
+                    currentTopPkg = pkgName;
+
+                    if (program->packageName.empty()) {
+                        program->packageName = pkgName;
+                    }
+
+                    if (currentTopPkg != "main") {
+                        activePkgNode = std::make_unique<PackageNode>(currentTopPkg);
+                    }
+                }
+            }
+        } else if (current().type == TokenType::IMPORT) {
             auto imps = parseImport();
             for (auto& imp : imps) {
                 if (imp) program->imports.push_back(std::move(imp));
             }
-        } else if (current().type == TokenType::PKG) {
-            auto pkg = parsePackage();
-            if (pkg) program->packages.push_back(std::move(pkg));
         } else if (current().type == TokenType::RECORD) {
             auto rec = parseRecord();
-            if (rec) program->records.push_back(std::move(rec));
+            if (rec) {
+                if (activePkgNode) {
+                    activePkgNode->members.push_back(std::move(rec));
+                } else {
+                    program->records.push_back(std::move(rec));
+                }
+            }
         } else if (current().type == TokenType::TRAIT) {
             auto tr = parseTrait();
-            if (tr) program->traits.push_back(std::move(tr));
+            if (tr) {
+                if (activePkgNode) {
+                    activePkgNode->members.push_back(std::move(tr));
+                } else {
+                    program->traits.push_back(std::move(tr));
+                }
+            }
         } else if (current().type == TokenType::IMPL) {
             auto im = parseImpl();
-            if (im) program->impls.push_back(std::move(im));
+            if (im) {
+                if (activePkgNode) {
+                    activePkgNode->members.push_back(std::move(im));
+                } else {
+                    program->impls.push_back(std::move(im));
+                }
+            }
         } else if (current().type == TokenType::TEST) {
             auto test = parseTestBlock();
-            if (test) program->tests.push_back(std::move(test));
+            if (test) {
+                if (activePkgNode) {
+                    activePkgNode->members.push_back(std::move(test));
+                } else {
+                    program->tests.push_back(std::move(test));
+                }
+            }
         } else if (current().type == TokenType::COMPTIME) {
             if (peekNext().type == TokenType::FN) {
                 auto fn = parseFunction();
-                if (fn) program->functions.push_back(std::move(fn));
+                if (fn) {
+                    if (activePkgNode) {
+                        activePkgNode->members.push_back(std::move(fn));
+                    } else {
+                        program->functions.push_back(std::move(fn));
+                    }
+                }
             } else {
                 advance();
             }
         } else if (current().type == TokenType::FN) {
             auto fn = parseFunction();
-            if (fn) program->functions.push_back(std::move(fn));
+            if (fn) {
+                if (activePkgNode) {
+                    activePkgNode->members.push_back(std::move(fn));
+                } else {
+                    program->functions.push_back(std::move(fn));
+                }
+            }
         } else {
             advance();
         }
     }
+
+    flushActivePkg();
     return program;
 }

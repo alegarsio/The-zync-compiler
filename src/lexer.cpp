@@ -38,6 +38,13 @@ std::vector<Token> Lexer::tokenize() {
 
         char c = peek();
 
+        if (c == '@' && pos + 1 < src.size() && src[pos + 1] == 'c') {
+            get();
+            get();
+            tokens.push_back({TokenType::AT_C, "@c"});
+            continue;
+        }
+
         if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
             std::string ident;
             while (std::isalnum(static_cast<unsigned char>(peek())) || peek() == '_') {
@@ -62,6 +69,8 @@ std::vector<Token> Lexer::tokenize() {
                 tokens.push_back({TokenType::MATCH, ident});
             } else if (ident == "var") {
                 tokens.push_back({TokenType::VAR, ident});
+            } else if (ident == "in") {
+                tokens.push_back({TokenType::IN_KW, ident});
             } else if (ident == "cmpt" || ident == "comptime") {
                 tokens.push_back({TokenType::COMPTIME, ident});
             } else if (ident == "test" || ident == "TEST") {
@@ -111,18 +120,23 @@ std::vector<Token> Lexer::tokenize() {
         } else if (c == '"') {
             get();
             std::string str;
-            while (peek() != '"' && peek() != '\0') {
-                str += get();
-            }
-            if (peek() == '"') {
-                get();
+            while (peek() != '\0') {
+                if (peek() == '\\' && pos + 1 < src.size()) {
+                    str += get();
+                    str += get();
+                } else if (peek() == '"') {
+                    get();
+                    break;
+                } else {
+                    str += get();
+                }
             }
             tokens.push_back({TokenType::STRING_LITERAL, str});
         } else if (c == '\'') {
             get();
             std::string ch;
             while (peek() != '\'' && peek() != '\0') {
-                if (peek() == '\\') {
+                if (peek() == '\\' && pos + 1 < src.size()) {
                     ch += get();
                 }
                 ch += get();

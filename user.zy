@@ -1,0 +1,6 @@
+pkg model
+
+record User{
+    name : string
+    age : int
+}

@@ -207,11 +207,14 @@ struct ContinueNode : public StatementNode {};
 enum class ForKind {
     INFINITE,
     CONDITIONAL,
-    CONTROLLED
+    CONTROLLED,
+    FOR_RANGE
 };
 
 struct ForNode : public StatementNode {
     ForKind kind;
+    std::string iteratorVar;
+    std::unique_ptr<ExpressionNode> iterable;
     std::unique_ptr<StatementNode> init;
     std::unique_ptr<ExpressionNode> condition;
     std::unique_ptr<StatementNode> increment;
@@ -304,6 +307,7 @@ struct PackageNode : public ASTNode {
 };
 
 struct ProgramNode : public ASTNode {
+    std::string packageName;
     std::vector<std::unique_ptr<ImportNode>> imports;
     std::vector<std::unique_ptr<PackageNode>> packages;
     std::vector<std::unique_ptr<TraitNode>> traits;
@@ -311,6 +315,8 @@ struct ProgramNode : public ASTNode {
     std::vector<std::unique_ptr<ImplNode>> impls;
     std::vector<std::unique_ptr<FunctionNode>> functions;
     std::vector<std::unique_ptr<TestBlockNode>> tests;
+
+    ProgramNode() : packageName("") {}
 };
 
 #endif

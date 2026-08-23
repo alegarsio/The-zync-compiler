@@ -1,0 +1,22 @@
+pkg main
+
+import (
+    std,
+    @c "crow.h"
+)
+
+fn main() -> void {
+    println("Menjalankan Crow HTTP Server di Zync...")
+
+    var app = crow::SimpleApp()
+
+    CROW_ROUTE(app, "/")([]() -> string {
+        return "Hello World dari Zync Language dengan Crow C++!"
+    })
+
+    CROW_ROUTE(app, "/api/user")([]() -> string {
+        return "{\"status\": \"success\", \"user\": \"ale\", \"age\": 19}"
+    })
+
+    app.port(18080).multithreaded().run()
+}

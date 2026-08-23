@@ -7,9 +7,12 @@ OBJ_DIR = obj
 BIN_DIR = bin
 
 SRCS = $(SRC_DIR)/main.cpp \
+       $(SRC_DIR)/config.cpp \
+       $(SRC_DIR)/builder.cpp \
        $(SRC_DIR)/lexer.cpp \
        $(SRC_DIR)/parser.cpp \
-       $(SRC_DIR)/codegen.cpp
+       $(SRC_DIR)/codegen.cpp \
+       $(SRC_DIR)/transpiler.cpp
 
 OBJS = $(patsubst $(SRC_DIR)/%.cpp, $(OBJ_DIR)/%.o, $(SRCS))
 

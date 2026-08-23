@@ -1,60 +1,62 @@
-#ifndef LEXER_HPP
-#define LEXER_HPP
+#pragma once
 
 #include <string>
 #include <vector>
 
 enum class TokenType {
-    FN,
-    RETURN,
+    END_OF_FILE,
+    IDENTIFIER,
+    NUMBER_LITERAL,
+    STRING_LITERAL,
+    CHAR_LITERAL,
     PKG,
     IMPORT,
+    FN,
+    RETURN,
     RECORD,
     TRAIT,
-    FOR_KW,
     IMPL,
     MATCH,
     VAR,
+    IN_KW,
     COMPTIME,
+    TEST,
     ASSERT,
     ASSERT_EQ,
     ASSERT_NE,
-    TEST,
     PRINT,
     PRINTLN,
     IF,
     ELSE,
+    FOR_KW,
     BREAK,
     CONTINUE,
     TRUE,
     FALSE,
-    IDENTIFIER,
     UNDERSCORE,
-    STRING_LITERAL,
-    CHAR_LITERAL,
-    NUMBER_LITERAL,
-    ASSIGN,
-    FAT_ARROW,
-    ARROW,
-    DOUBLE_COLON,
-    DOT,
+    AT_C,
+    LOGICAL_AND,
+    LOGICAL_OR,
     EQUALS,
     NOT_EQUALS,
+    NOT,
     LESS,
     LESS_EQUALS,
     GREATER,
     GREATER_EQUALS,
-    LOGICAL_AND,
-    LOGICAL_OR,
-    NOT,
-    PLUS_PLUS,
+    ARROW,
+    FAT_ARROW,
+    ASSIGN,
+    MINUS,
     MINUS_MINUS,
     PLUS,
-    MINUS,
+    PLUS_PLUS,
     STAR,
     SLASH,
+    DOT,
     COMMA,
     COLON,
+    DOUBLE_COLON,
     SEMICOLON,
     LPAREN,
     RPAREN,
@@ -62,7 +64,6 @@ enum class TokenType {
     RBRACE,
     LBRACKET,
     RBRACKET,
-    END_OF_FILE,
     UNKNOWN
 };
 
@@ -84,5 +85,3 @@ private:
     char get();
     void skipWhitespace();
 };
-
-#endif
