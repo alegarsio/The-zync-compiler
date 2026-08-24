@@ -468,7 +468,14 @@ std::string CodeGen::genExpression(const ExpressionNode* expr) {
             out << "{ return " << genExpression(lambda->exprBody.get()) << "; }";
         } else {
             out << "{\n";
-            for (const auto& stmt : lambda->blockBody) {
+            for (size_t i = 0; i < lambda->blockBody.size(); ++i) {
+                const auto& stmt = lambda->blockBody[i];
+                if (i == lambda->blockBody.size() - 1 && !lambda->returnType.empty() && lambda->returnType != "void") {
+                    if (auto exprStmt = dynamic_cast<const ExpressionStatementNode*>(stmt.get())) {
+                        out << getIndent(2) << "return " << genExpression(exprStmt->expr.get()) << ";\n";
+                        continue;
+                    }
+                }
                 out << genStatement(stmt.get(), 2);
             }
             out << "    }";
@@ -1001,11 +1008,6 @@ std::string CodeGen::generate() {
             customIncludes << "#include <" << imp->target << ">\n";
         } else if (imp->kind == ImportKind::CPP_USER_HEADER) {
             customIncludes << "#include \"" << imp->target << "\"\n";
-        } else if (imp->kind == ImportKind::ZYNC_FILE) {
-            std::string stem = fs::path(imp->target).stem().string();
-            if (stem != "main" && stem != "std") {
-                importedPackages.insert(stem);
-            }
         } else if (imp->kind == ImportKind::PACKAGE) {
             if (imp->target != "std" && imp->target != "main") {
                 importedPackages.insert(imp->target);

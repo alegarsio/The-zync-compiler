@@ -12,7 +12,8 @@ SRCS = $(SRC_DIR)/main.cpp \
        $(SRC_DIR)/lexer.cpp \
        $(SRC_DIR)/parser.cpp \
        $(SRC_DIR)/codegen.cpp \
-       $(SRC_DIR)/transpiler.cpp
+       $(SRC_DIR)/transpiler.cpp \
+       $(SRC_DIR)/dependencies/crow.cpp
 
 OBJS = $(patsubst $(SRC_DIR)/%.cpp, $(OBJ_DIR)/%.o, $(SRCS))
 
@@ -29,7 +30,7 @@ $(TARGET): $(OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp
-	@mkdir -p $(OBJ_DIR)
+	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -I$(INC_DIR) -c $< -o $@
 
 install: $(TARGET)

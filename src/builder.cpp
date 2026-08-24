@@ -223,7 +223,17 @@ bool handleBuild(const std::string& inputPath, const std::string& customOutputNa
         optFlags = customFlags;
         optDescription = "Custom (" + customFlags + ")";
     } else if (sizeProf == SizeProfile::SMALL) {
-        optFlags = "-Os -ffunction-sections -fdata-sections";
+        optFlags = "-Os -ffunction-sections -fdata-sections -fno-unwind-tables -fno-asynchronous-unwind-tables";
+        if (target == BuildTarget::NATIVE) {
+#if defined(__APPLE__)
+            linkFlags += " -Wl,-dead_strip -Wl,-x";
+#else
+            linkFlags += " -s -Wl,--gc-sections";
+#endif
+        }
+        optDescription = "Size: Small (-Os, Dead Strip, Section GC)";
+    } else if (sizeProf == SizeProfile::MEDIUM) {
+        optFlags = "-O2 -ffunction-sections -fdata-sections";
         if (target == BuildTarget::NATIVE) {
 #if defined(__APPLE__)
             linkFlags += " -Wl,-dead_strip";
@@ -231,15 +241,12 @@ bool handleBuild(const std::string& inputPath, const std::string& customOutputNa
             linkFlags += " -s -Wl,--gc-sections";
 #endif
         }
-        optDescription = "Size: Small (-Os)";
-    } else if (sizeProf == SizeProfile::MEDIUM) {
-        optFlags = "-O2";
-        optDescription = "Size: Medium (-O2 Balanced)";
+        optDescription = "Size: Medium (-O2 Balanced Size & Speed)";
     } else if (sizeProf == SizeProfile::LARGE) {
         optFlags = (target == BuildTarget::WASM)
             ? "-O3 -funroll-loops -DNDEBUG"
             : "-O3 -march=native -funroll-loops -DNDEBUG";
-        optDescription = "Size: Large (-O3 Max Performance & Inlining)";
+        optDescription = "Size: Large (-O3 Max Performance & Full Inlining)";
     } else {
         switch (opt) {
             case OptLevel::O1:
@@ -376,9 +383,9 @@ bool handleBuild(const std::string& inputPath, const std::string& customOutputNa
 
     std::string compileCmd;
     if (target == BuildTarget::WASM) {
-        compileCmd = "em++ -std=c++17 -I. -Iinclude -Inative " + includeFlags + " " + optFlags + " -c " + mainCpp.string() + " -o " + mainObj.string();
+        compileCmd = "em++ -std=c++17 -I. -Iinclude -Inative -Idependencies -Idependencies/wrapper " + includeFlags + " " + optFlags + " -c " + mainCpp.string() + " -o " + mainObj.string();
     } else {
-        compileCmd = "g++ -std=c++17 -I. -Iinclude -Inative " + includeFlags + " " + optFlags + " -c " + mainCpp.string() + " -o " + mainObj.string();
+        compileCmd = "g++ -std=c++17 -I. -Iinclude -Inative -Idependencies -Idependencies/wrapper " + includeFlags + " " + optFlags + " -c " + mainCpp.string() + " -o " + mainObj.string();
     }
 
     std::cout << "\033[1;36m[Zync Parallel]\033[0m (1/1) Compiling " << zyPath.filename().string() << "..." << std::endl;
@@ -391,14 +398,14 @@ bool handleBuild(const std::string& inputPath, const std::string& customOutputNa
     if (target == BuildTarget::WASM) {
         fs::path wasmHtmlOut = wasmDir / (outputName + ".html");
         std::string wasmOpt = optFlags.empty() ? "-O3" : optFlags;
-        std::string emccCmd = "em++ -std=c++17 -I. -Iinclude -Inative " + includeFlags + " " + wasmOpt + " -s WASM=1 -s ALLOW_MEMORY_GROWTH=1 " + mainObj.string() + " " + linkFlags + " -o " + wasmHtmlOut.string();
+        std::string emccCmd = "em++ -std=c++17 -I. -Iinclude -Inative -Idependencies -Idependencies/wrapper " + includeFlags + " " + wasmOpt + " -s WASM=1 -s ALLOW_MEMORY_GROWTH=1 " + mainObj.string() + " " + linkFlags + " -o " + wasmHtmlOut.string();
         int wasmRes = std::system(emccCmd.c_str());
         if (wasmRes != 0) {
             std::cerr << "\033[1;31m[Zync Error]\033[0m Linker step for WASM failed." << std::endl;
             return false;
         }
     } else {
-        std::string linkCmd = "g++ -std=c++17 -I. -Iinclude -Inative " + includeFlags + " " + optFlags + " " + mainObj.string() + " " + linkFlags + " -o " + (buildDir / outputName).string();
+        std::string linkCmd = "g++ -std=c++17 -I. -Iinclude -Inative -Idependencies -Idependencies/wrapper " + includeFlags + " " + optFlags + " " + mainObj.string() + " " + linkFlags + " -o " + (buildDir / outputName).string();
         int linkRes = std::system(linkCmd.c_str());
         if (linkRes != 0) {
             std::cerr << "\033[1;31m[Zync Error]\033[0m Linker step failed." << std::endl;
@@ -407,7 +414,7 @@ bool handleBuild(const std::string& inputPath, const std::string& customOutputNa
     }
 
     if (dumpGimple) {
-        std::string gccGimpleCmd = "g++ -std=c++17 -I. -Iinclude -Inative " + includeFlags + " " + optFlags + " -fdump-tree-gimple -c " + mainCpp.string() + " -o " + mainObj.string() + " 2>/dev/null";
+        std::string gccGimpleCmd = "g++ -std=c++17 -I. -Iinclude -Inative -Idependencies -Idependencies/wrapper " + includeFlags + " " + optFlags + " -fdump-tree-gimple -c " + mainCpp.string() + " -o " + mainObj.string() + " 2>/dev/null";
         std::system(gccGimpleCmd.c_str());
         for (const auto& entry : fs::directory_iterator(fs::current_path())) {
             if (entry.is_regular_file() && entry.path().filename().string().find(".gimple") != std::string::npos) {
@@ -867,7 +874,7 @@ void printUsage() {
     std::cout << "  ./zync create native <name>        Generate C++ native header in native/<name>/<name>.hpp" << std::endl;
     std::cout << "  ./zync add pkg <pkg_name>          Create new package file <pkg_name>.zy" << std::endl;
     std::cout << "  ./zync add test <name>             Generate test suite in tests/<name>_test.zy" << std::endl;
-    std::cout << "  ./zync add dep <name>              Generate wrapper for predefined dependency (e.g. crow)" << std::endl;
+    std::cout << "  ./zync add wrapper <name>          Generate wrapper for predefined dependency (e.g. crow)" << std::endl;
     std::cout << "  ./zync add native <name>           Generate C++ native binding module in native/<name>/<name>.hpp" << std::endl;
     std::cout << "  ./zync build <file.zy> [options]   Compile source file to binary (default: build/<name>)" << std::endl;
     std::cout << "  ./zync run <name> [options]        Execute compiled native binary from build/<name>" << std::endl;
@@ -875,6 +882,10 @@ void printUsage() {
     std::cout << "  ./zync repl                        Launch interactive REPL session" << std::endl;
     std::cout << "  ./zync serve [name]                Launch local HTTP server for WASM" << std::endl;
     std::cout << "  ./zync test <file.zy>              Build and run test suite with benchmark report (outputs to build/test/)" << std::endl;
+    std::cout << "\n\033[1mBinary Size Presets:\033[0m" << std::endl;
+    std::cout << "  --size small, -Os, -size small     Smallest binary footprint (-Os, section-GC, stripped tables)" << std::endl;
+    std::cout << "  --size medium, -Om, -size medium   Balanced binary size & performance (-O2, section-GC)" << std::endl;
+    std::cout << "  --size large, -Ol, -size large     Maximum performance & inlining (large footprint, -O3, loop unroll)" << std::endl;
     std::cout << "\n\033[1mOptimization Presets & Performance Levels:\033[0m" << std::endl;
     std::cout << "  (default)               Debug build (-O0)" << std::endl;
     std::cout << "  -O1                     Basic optimization" << std::endl;

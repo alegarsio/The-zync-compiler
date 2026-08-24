@@ -155,6 +155,9 @@ std::vector<std::unique_ptr<ImportNode>> Parser::parseImport() {
                         advance();
                     }
                 }
+                if (path.length() >= 4 && (path.substr(path.length() - 4) == ".hpp" || path.substr(path.length() - 2) == ".h")) {
+                    return std::make_unique<ImportNode>(ImportKind::CPP_USER_HEADER, path);
+                }
                 if (path.length() < 3 || path.substr(path.length() - 3) != ".zy") {
                     path += ".zy";
                 }
@@ -552,8 +555,26 @@ std::unique_ptr<ExpressionNode> Parser::parsePrimary() {
             match(TokenType::FAT_ARROW);
 
             if (current().type == TokenType::LBRACE) {
-                lambda->isExpressionBody = false;
-                lambda->blockBody = parseBlock();
+                size_t look = index + 1;
+                int d = 0;
+                bool isMap = false;
+                while (look < tokens.size() && tokens[look].type != TokenType::RBRACE && tokens[look].type != TokenType::END_OF_FILE) {
+                    if (tokens[look].type == TokenType::LBRACE) d++;
+                    if (tokens[look].type == TokenType::RBRACE) d--;
+                    if (tokens[look].type == TokenType::COLON && d == 0) {
+                        isMap = true;
+                        break;
+                    }
+                    look++;
+                }
+
+                if (isMap) {
+                    lambda->isExpressionBody = true;
+                    lambda->exprBody = parseMapLiteral();
+                } else {
+                    lambda->isExpressionBody = false;
+                    lambda->blockBody = parseBlock();
+                }
             } else {
                 lambda->isExpressionBody = true;
                 lambda->exprBody = parseExpression();
@@ -1100,9 +1121,6 @@ std::unique_ptr<StatementNode> Parser::parseStatement() {
     if (current().type == TokenType::IDENTIFIER) {
         if (peekNext().type == TokenType::PLUS_PLUS || peekNext().type == TokenType::MINUS_MINUS) {
             return parseIncDec();
-        }
-        if (peekNext().type == TokenType::ASSIGN) {
-            return parseAssignment();
         }
 
         size_t lookAhead = index + 1;

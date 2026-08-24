@@ -1,4 +1,5 @@
 #include "../include/config.hpp"
+#include "../include/dependencies/crow.hpp"
 #include <fstream>
 #include <sstream>
 #include <iostream>
@@ -150,57 +151,44 @@ void appendLibToToml(const std::string& libName) {
 }
 
 bool handleAddDependency(const std::string& depName) {
-    fs::path nativeDir = "native";
-    if (!fs::exists(nativeDir)) {
+    std::string name = depName;
+    if (name.length() >= 4 && name.substr(name.length() - 4) == ".hpp") {
+        name = name.substr(0, name.length() - 4);
+    } else if (name.length() >= 2 && name.substr(name.length() - 2) == ".h") {
+        name = name.substr(0, name.length() - 2);
+    }
+
+    fs::path depDir = fs::path("dependencies") / "wrapper" / name;
+    if (!fs::exists(depDir)) {
         try {
-            fs::create_directories(nativeDir);
+            fs::create_directories(depDir);
         } catch (const std::exception& e) {
-            std::cerr << "\033[1;31m[Error]\033[0m Failed to create native directory: " << e.what() << std::endl;
+            std::cerr << "\033[1;31m[Error]\033[0m Failed to create wrapper directory: " << e.what() << std::endl;
             return false;
         }
     }
 
-    if (depName == "crow" || depName == "crow.h") {
-        fs::path crowHpp = nativeDir / "crow.hpp";
+    if (name == "crow") {
+        fs::path crowHpp = depDir / "crow.hpp";
         std::ofstream out(crowHpp);
         if (!out.is_open()) {
             std::cerr << "\033[1;31m[Error]\033[0m Failed to create " << crowHpp.string() << std::endl;
             return false;
         }
 
-        out << "#pragma once\n\n"
-            << "#include <crow.h>\n"
-            << "#include <string>\n"
-            << "#include <functional>\n\n"
-            << "namespace Chrow {\n\n"
-            << "    class App {\n"
-            << "    private:\n"
-            << "        crow::SimpleApp app;\n\n"
-            << "    public:\n"
-            << "        App() = default;\n\n"
-            << "        void get(const std::string& route, std::function<std::string()> handler) {\n"
-            << "            app.route_dynamic(route)(handler);\n"
-            << "        }\n\n"
-            << "        void post(const std::string& route, std::function<std::string()> handler) {\n"
-            << "            app.route_dynamic(route).methods(crow::HTTPMethod::POST)(handler);\n"
-            << "        }\n\n"
-            << "        void run(int port) {\n"
-            << "            app.port(port).multithreaded().run();\n"
-            << "        }\n"
-            << "    };\n\n"
-            << "}\n";
+        out << ZyncDependencies::getCrowTemplate();
         out.close();
 
         appendLibToToml("pthread");
 
-        std::cout << "\033[1;32m[Zync Dep Added]\033[0m Crow HTTP wrapper generated: '\033[1m" << crowHpp.string() << "\033[0m'" << std::endl;
+        std::cout << "\033[1;32m[Zync Wrapper Added]\033[0m Crow HTTP wrapper generated: '\033[1m" << crowHpp.string() << "\033[0m'" << std::endl;
         std::cout << "\033[1;36m[Zync Config]\033[0m Added 'pthread' link dependency to zync.toml" << std::endl;
         std::cout << "\nImport in your Zync code with:\n";
-        std::cout << "  import \"native/crow.hpp\"\n";
-        std::cout << "  var app = crow_wrapper::App()\n" << std::endl;
+        std::cout << "  import \"dependencies/wrapper/" << name << "/crow.hpp\"\n";
+        std::cout << "  var app = ZyncCrow::App()\n" << std::endl;
         return true;
     }
 
-    std::cerr << "\033[1;31m[Error]\033[0m Unknown predefined dependency: " << depName << std::endl;
+    std::cerr << "\033[1;31m[Error]\033[0m Unknown predefined wrapper: " << depName << std::endl;
     return false;
 }

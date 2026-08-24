@@ -60,7 +60,7 @@ int main(int argc, char* argv[]) {
 
     if (command == "add") {
         if (argc < 3) {
-            std::cerr << "\033[1;31m[Error]\033[0m Missing argument. Usage: zync add pkg <name> OR zync add test <name> OR zync add dep <name> OR zync add native <name>" << std::endl;
+            std::cerr << "\033[1;31m[Error]\033[0m Missing argument. Usage: zync add pkg <name> OR zync add test <name> OR zync add wrapper <name> OR zync add native <name>" << std::endl;
             return 1;
         }
         std::string subCmd = argv[2];
@@ -76,9 +76,9 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
             return handleCreateTest(argv[3]) ? 0 : 1;
-        } else if (subCmd == "dep" || subCmd == "dependency") {
+        } else if (subCmd == "wrapper" || subCmd == "dep" || subCmd == "dependency") {
             if (argc < 4) {
-                std::cerr << "\033[1;31m[Error]\033[0m Missing dependency name. Usage: zync add dep <name>" << std::endl;
+                std::cerr << "\033[1;31m[Error]\033[0m Missing wrapper name. Usage: zync add wrapper <name>" << std::endl;
                 return 1;
             }
             return handleAddDependency(argv[3]) ? 0 : 1;
@@ -137,6 +137,17 @@ int main(int argc, char* argv[]) {
             } else if ((arg == "-C" || arg == "--custom-opt") && i + 1 < argc) {
                 customFlags = argv[++i];
                 opt = OptLevel::CUSTOM;
+            } else if ((arg == "--size" || arg == "-size") && i + 1 < argc) {
+                std::string sArg = argv[++i];
+                if (sArg == "small" || sArg == "s") sizeProf = SizeProfile::SMALL;
+                else if (sArg == "medium" || sArg == "m") sizeProf = SizeProfile::MEDIUM;
+                else if (sArg == "large" || sArg == "l") sizeProf = SizeProfile::LARGE;
+            } else if (arg == "-Os" || arg == "--size-small") {
+                sizeProf = SizeProfile::SMALL;
+            } else if (arg == "-Om" || arg == "--size-medium") {
+                sizeProf = SizeProfile::MEDIUM;
+            } else if (arg == "-Ol" || arg == "--size-large") {
+                sizeProf = SizeProfile::LARGE;
             } else if (arg.rfind("-l", 0) == 0 || arg.rfind("-L", 0) == 0) {
                 userLinkFlags += " " + arg;
             } else if (arg == "--framework" && i + 1 < argc) {
@@ -167,8 +178,6 @@ int main(int argc, char* argv[]) {
                 opt = OptLevel::O4;
             } else if (arg == "-O5") {
                 opt = OptLevel::O5;
-            } else if (arg == "-Os") {
-                sizeProf = SizeProfile::SMALL;
             } else if (arg == "-g" || arg == "--gimple") {
                 dumpGimple = true;
             } else if (arg == "-wasm" || arg == "--wasm") {
