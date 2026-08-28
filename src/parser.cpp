@@ -1,5 +1,7 @@
 #include "../include/parser.hpp"
 #include <unordered_set>
+#include <iostream>
+#include <cstdlib>
 
 static const std::unordered_set<std::string> knownCppStdHeaders = {
     "cmath", "cassert", "iostream", "vector", "map", "string", "algorithm", 
@@ -272,6 +274,13 @@ std::unique_ptr<ImplNode> Parser::parseImpl() {
         std::string firstIdent = current().value;
         advance();
 
+        while (match(TokenType::DOUBLE_COLON)) {
+            if (current().type == TokenType::IDENTIFIER) {
+                firstIdent += "::" + current().value;
+                advance();
+            }
+        }
+
         std::string traitName = "";
         std::string targetName = firstIdent;
 
@@ -281,6 +290,12 @@ std::unique_ptr<ImplNode> Parser::parseImpl() {
                 traitName = firstIdent;
                 targetName = current().value;
                 advance();
+                while (match(TokenType::DOUBLE_COLON)) {
+                    if (current().type == TokenType::IDENTIFIER) {
+                        targetName += "::" + current().value;
+                        advance();
+                    }
+                }
             }
         }
 
@@ -556,24 +571,36 @@ std::unique_ptr<ExpressionNode> Parser::parsePrimary() {
 
             if (current().type == TokenType::LBRACE) {
                 size_t look = index + 1;
-                int d = 0;
-                bool isMap = false;
-                while (look < tokens.size() && tokens[look].type != TokenType::RBRACE && tokens[look].type != TokenType::END_OF_FILE) {
-                    if (tokens[look].type == TokenType::LBRACE) d++;
-                    if (tokens[look].type == TokenType::RBRACE) d--;
-                    if (tokens[look].type == TokenType::COLON && d == 0) {
-                        isMap = true;
-                        break;
+                int d = 1;
+                bool isBlock = false;
+
+                while (look < tokens.size() && d > 0 && tokens[look].type != TokenType::END_OF_FILE) {
+                    if (tokens[look].type == TokenType::LBRACE) {
+                        d++;
+                    } else if (tokens[look].type == TokenType::RBRACE) {
+                        d--;
+                        if (d == 0) break;
+                    }
+
+                    if (d == 1) {
+                        TokenType t = tokens[look].type;
+                        if (t == TokenType::VAR || t == TokenType::RETURN || 
+                            t == TokenType::IF || t == TokenType::FOR_KW || 
+                            t == TokenType::PRINT || t == TokenType::PRINTLN || 
+                            t == TokenType::BREAK || t == TokenType::CONTINUE) {
+                            isBlock = true;
+                            break;
+                        }
                     }
                     look++;
                 }
 
-                if (isMap) {
-                    lambda->isExpressionBody = true;
-                    lambda->exprBody = parseMapLiteral();
-                } else {
+                if (isBlock) {
                     lambda->isExpressionBody = false;
                     lambda->blockBody = parseBlock();
+                } else {
+                    lambda->isExpressionBody = true;
+                    lambda->exprBody = parseMapLiteral();
                 }
             } else {
                 lambda->isExpressionBody = true;
@@ -1176,7 +1203,7 @@ std::unique_ptr<FunctionNode> Parser::parseFunction() {
     return nullptr;
 }
 
-std::unique_ptr<ProgramNode> Parser::parseProgram() {
+std::unique_ptr<ProgramNode> Parser::parseProgram(const std::string& defaultPkgName) {
     auto program = std::make_unique<ProgramNode>();
     std::string currentTopPkg = "";
     std::unique_ptr<PackageNode> activePkgNode = nullptr;
@@ -1187,6 +1214,29 @@ std::unique_ptr<ProgramNode> Parser::parseProgram() {
             activePkgNode = nullptr;
         }
     };
+
+    if (current().type == TokenType::PKG && peekNext().type == TokenType::IDENTIFIER) {
+        advance();
+        std::string declaredPkg = current().value;
+        advance();
+
+        if (defaultPkgName != "main" && !defaultPkgName.empty() && declaredPkg != defaultPkgName) {
+            std::cerr << "\033[1;31m[Package Error]\033[0m Package name mismatch! "
+                      << "Declared 'pkg " << declaredPkg << "', but file is '" 
+                      << defaultPkgName << ".zy'. (Expected 'pkg " << defaultPkgName << "' or omit it entirely).\n";
+            std::exit(1);
+        }
+
+        currentTopPkg = declaredPkg;
+        program->packageName = currentTopPkg;
+        match(TokenType::SEMICOLON);
+
+        if (currentTopPkg != "main") {
+            activePkgNode = std::make_unique<PackageNode>(currentTopPkg);
+        }
+    } else {
+        program->packageName = defaultPkgName;
+    }
 
     while (current().type != TokenType::END_OF_FILE) {
         if (current().type == TokenType::PKG) {

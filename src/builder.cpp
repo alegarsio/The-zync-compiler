@@ -15,6 +15,10 @@
 #include <mutex>
 #include <algorithm>
 #include <cctype>
+#include <regex>
+#include <array>
+#include <cstdio>
+#include <memory>
 
 static uint64_t computeHash(const std::string& str) {
     uint64_t hash = 14695981039346656037ULL;
@@ -70,8 +74,137 @@ static void saveCacheManifest(const fs::path& manifestPath, const std::unordered
     }
 }
 
+static std::string execCommandCapture(const std::string& cmd, int& exitCode) {
+    std::string result = "";
+    std::string redirectCmd = cmd + " 2>&1";
+    std::array<char, 256> buffer;
+    
+    FILE* pipe = popen(redirectCmd.c_str(), "r");
+    if (!pipe) {
+        exitCode = -1;
+        return "Failed to run command pipe.";
+    }
+
+    while (fgets(buffer.data(), buffer.size(), pipe) != nullptr) {
+        result += buffer.data();
+    }
+
+    exitCode = pclose(pipe);
+    return result;
+}
+
+static std::string getSourceLine(const std::string& filePath, int lineNum) {
+    std::ifstream file(filePath);
+    if (!file.is_open()) return "";
+    std::string line;
+    int current = 1;
+    while (std::getline(file, line)) {
+        if (current == lineNum) return line;
+        current++;
+    }
+    return "";
+}
+
+static void printZyncDiagnostic(const std::string& rawCppOutput, const std::string& zyFile, const std::string& mainCppFile) {
+    (void)mainCppFile;
+    std::istringstream stream(rawCppOutput);
+    std::string line;
+    std::regex errorRegex(R"((?:.*[\/\\])?([^\/\\:]+\.(?:cpp|zy)):(\d+):(\d+):\s*error:\s*(.*))");
+    std::smatch match;
+
+    bool foundAny = false;
+
+    while (std::getline(stream, line)) {
+        if (std::regex_search(line, match, errorRegex)) {
+            foundAny = true;
+            std::string matchedFile = match[1].str();
+            int errorLine = std::stoi(match[2].str());
+            int col = std::stoi(match[3].str());
+            std::string errMsg = match[4].str();
+
+            int zyLine = errorLine;
+            std::string zySourceSnippet = "";
+
+            if (matchedFile.find(".cpp") != std::string::npos) {
+                std::string targetIdentifier = "";
+                std::regex identRegex(R"('(.*?)')");
+                std::smatch identMatch;
+                if (std::regex_search(errMsg, identMatch, identRegex)) {
+                    targetIdentifier = identMatch[1].str();
+                    if (targetIdentifier.rfind("_", 0) == 0) {
+                        targetIdentifier = targetIdentifier.substr(1);
+                    }
+                }
+
+                std::ifstream zyStream(zyFile);
+                if (zyStream.is_open()) {
+                    std::string zLine;
+                    int zCurrent = 1;
+                    int bestLine = 0;
+                    std::string bestSnippet = "";
+
+                    while (std::getline(zyStream, zLine)) {
+                        if (!targetIdentifier.empty() && zLine.find(targetIdentifier) != std::string::npos) {
+                            bestLine = zCurrent;
+                            bestSnippet = zLine;
+                            break;
+                        }
+                        zCurrent++;
+                    }
+
+                    if (bestLine > 0) {
+                        zyLine = bestLine;
+                        zySourceSnippet = bestSnippet;
+                    }
+                }
+            }
+
+            if (zySourceSnippet.empty()) {
+                zySourceSnippet = getSourceLine(zyFile, zyLine);
+            }
+
+            if (!zySourceSnippet.empty()) {
+                std::string targetIdentifier = "";
+                std::regex identRegex(R"('(.*?)')");
+                std::smatch identMatch;
+                if (std::regex_search(errMsg, identMatch, identRegex)) {
+                    targetIdentifier = identMatch[1].str();
+                }
+                if (!targetIdentifier.empty()) {
+                    size_t pos = zySourceSnippet.find(targetIdentifier);
+                    if (pos != std::string::npos) {
+                        col = static_cast<int>(pos + 1);
+                    }
+                }
+            }
+
+            errMsg = std::regex_replace(errMsg, std::regex("std::basic_string<char>|std::string"), "string");
+            errMsg = std::regex_replace(errMsg, std::regex("const char\\[\\d+\\]"), "string");
+            errMsg = std::regex_replace(errMsg, std::regex("std::vector"), "vector");
+            errMsg = std::regex_replace(errMsg, std::regex("std::map"), "map");
+            errMsg = std::regex_replace(errMsg, std::regex("::_new"), "::new");
+            errMsg = std::regex_replace(errMsg, std::regex("_new"), "new");
+
+            std::cerr << "\n\033[1;31m[Zync Error]\033[0m \033[1m" << zyFile << ":" << zyLine << ":" << col << "\033[0m: " << errMsg << "\n";
+            if (!zySourceSnippet.empty()) {
+                std::cerr << " \033[1;34m" << std::setw(5) << zyLine << " |\033[0m " << zySourceSnippet << "\n";
+                std::cerr << " \033[1;34m      |\033[0m \033[1;31m" << std::string(col > 0 ? col - 1 : 0, ' ') << "^~~~~~\033[0m\n";
+            }
+        }
+    }
+
+    if (!foundAny) {
+        std::cerr << rawCppOutput << std::endl;
+    }
+}
 bool parseFileRecursive(const fs::path& filePath, ProgramNode* mergedProgram, std::unordered_set<std::string>& visitedFiles, std::vector<fs::path>& allDepFiles) {
-    std::string canonicalPath = fs::canonical(filePath).string();
+    std::string canonicalPath;
+    try {
+        canonicalPath = fs::canonical(filePath).string();
+    } catch (...) {
+        canonicalPath = filePath.string();
+    }
+
     if (visitedFiles.find(canonicalPath) != visitedFiles.end()) {
         return true;
     }
@@ -93,20 +226,10 @@ bool parseFileRecursive(const fs::path& filePath, ProgramNode* mergedProgram, st
     std::vector<Token> tokens = lexer.tokenize();
 
     Parser parser(tokens);
-    auto programAST = parser.parseProgram();
-
     std::string expectedPkg = filePath.stem().string();
+    auto programAST = parser.parseProgram(expectedPkg);
 
-    if (programAST->packageName.empty()) {
-        std::cerr << "\033[1;31m[Package Error]\033[0m Missing package declaration in '" << filePath.filename().string() << "':" << std::endl;
-        std::cerr << "  Expected: 'pkg " << expectedPkg << "' at the top of the file." << std::endl;
-        return false;
-    }
-
-    if (programAST->packageName != expectedPkg) {
-        std::cerr << "\033[1;31m[Package Error]\033[0m Package name mismatch in '" << filePath.filename().string() << "':" << std::endl;
-        std::cerr << "  Declared: 'pkg " << programAST->packageName << "'" << std::endl;
-        std::cerr << "  Expected: 'pkg " << expectedPkg << "' (Must strictly match filename: " << filePath.filename().string() << ")" << std::endl;
+    if (!programAST) {
         return false;
     }
 
@@ -144,33 +267,12 @@ bool parseFileRecursive(const fs::path& filePath, ProgramNode* mergedProgram, st
         }
     }
 
-    bool isEntryFile = (allDepFiles.size() == 1);
-
-    if (!isEntryFile) {
-        if (!programAST->records.empty() || !programAST->traits.empty() || !programAST->functions.empty() || !programAST->impls.empty()) {
-            auto pkgNode = std::make_unique<PackageNode>(programAST->packageName);
-
-            for (auto& tr : programAST->traits) pkgNode->members.push_back(std::move(tr));
-            for (auto& rec : programAST->records) pkgNode->members.push_back(std::move(rec));
-            for (auto& im : programAST->impls) pkgNode->members.push_back(std::move(im));
-            for (auto& fn : programAST->functions) pkgNode->members.push_back(std::move(fn));
-
-            mergedProgram->packages.push_back(std::move(pkgNode));
-        }
-        for (auto& pkg : programAST->packages) {
-            mergedProgram->packages.push_back(std::move(pkg));
-        }
-    } else {
-        for (auto& tr : programAST->traits) mergedProgram->traits.push_back(std::move(tr));
-        for (auto& rec : programAST->records) mergedProgram->records.push_back(std::move(rec));
-        for (auto& im : programAST->impls) mergedProgram->impls.push_back(std::move(im));
-        for (auto& pkg : programAST->packages) mergedProgram->packages.push_back(std::move(pkg));
-        for (auto& fn : programAST->functions) mergedProgram->functions.push_back(std::move(fn));
-    }
-
-    for (auto& t : programAST->tests) {
-        mergedProgram->tests.push_back(std::move(t));
-    }
+    for (auto& tr : programAST->traits) mergedProgram->traits.push_back(std::move(tr));
+    for (auto& rec : programAST->records) mergedProgram->records.push_back(std::move(rec));
+    for (auto& im : programAST->impls) mergedProgram->impls.push_back(std::move(im));
+    for (auto& pkg : programAST->packages) mergedProgram->packages.push_back(std::move(pkg));
+    for (auto& fn : programAST->functions) mergedProgram->functions.push_back(std::move(fn));
+    for (auto& t : programAST->tests) mergedProgram->tests.push_back(std::move(t));
 
     return true;
 }
@@ -389,25 +491,31 @@ bool handleBuild(const std::string& inputPath, const std::string& customOutputNa
     }
 
     std::cout << "\033[1;36m[Zync Parallel]\033[0m (1/1) Compiling " << zyPath.filename().string() << "..." << std::endl;
-    int compRes = std::system(compileCmd.c_str());
-    if (compRes != 0) {
-        std::cerr << "\033[1;31m[Compile Error]\033[0m Failed compiling unit: " << zyPath.filename().string() << std::endl;
+    int exitCode = 0;
+    std::string compileOutput = execCommandCapture(compileCmd, exitCode);
+    if (exitCode != 0) {
+        printZyncDiagnostic(compileOutput, zyPath.string(), mainCpp.string());
+        std::cerr << "\n\033[1;31m[Compile Error]\033[0m Failed compiling unit: " << zyPath.filename().string() << std::endl;
         return false;
     }
 
     if (target == BuildTarget::WASM) {
         fs::path wasmHtmlOut = wasmDir / (outputName + ".html");
         std::string wasmOpt = optFlags.empty() ? "-O3" : optFlags;
-        std::string emccCmd = "em++ -std=c++17 -I. -Iinclude -Inative -Idependencies -Idependencies/wrapper " + includeFlags + " " + wasmOpt + " -s WASM=1 -s ALLOW_MEMORY_GROWTH=1 " + mainObj.string() + " " + linkFlags + " -o " + wasmHtmlOut.string();
-        int wasmRes = std::system(emccCmd.c_str());
-        if (wasmRes != 0) {
+        std::string emccCmd = "em++ -std=c++17 -I. -Iinclude -Inative -Idependencies -Idependencies/wrapper " + includeFlags + " " + optFlags + " -s WASM=1 -s ALLOW_MEMORY_GROWTH=1 " + mainObj.string() + " " + linkFlags + " -o " + wasmHtmlOut.string();
+        int wasmExit = 0;
+        std::string wasmOut = execCommandCapture(emccCmd, wasmExit);
+        if (wasmExit != 0) {
+            printZyncDiagnostic(wasmOut, zyPath.string(), mainCpp.string());
             std::cerr << "\033[1;31m[Zync Error]\033[0m Linker step for WASM failed." << std::endl;
             return false;
         }
     } else {
         std::string linkCmd = "g++ -std=c++17 -I. -Iinclude -Inative -Idependencies -Idependencies/wrapper " + includeFlags + " " + optFlags + " " + mainObj.string() + " " + linkFlags + " -o " + (buildDir / outputName).string();
-        int linkRes = std::system(linkCmd.c_str());
-        if (linkRes != 0) {
+        int linkExit = 0;
+        std::string linkOut = execCommandCapture(linkCmd, linkExit);
+        if (linkExit != 0) {
+            printZyncDiagnostic(linkOut, zyPath.string(), mainCpp.string());
             std::cerr << "\033[1;31m[Zync Error]\033[0m Linker step failed." << std::endl;
             return false;
         }

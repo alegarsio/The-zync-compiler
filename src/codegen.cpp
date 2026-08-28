@@ -59,14 +59,31 @@ CodeGen::CodeGen(const ProgramNode* program)
                     recordMap[pkg->name + "::" + rec->name] = rec;
                     recordMap[rec->name] = rec;
                 }
+                if (auto tr = dynamic_cast<const TraitNode*>(m.get())) {
+                    traitMap[pkg->name + "::" + tr->name] = tr;
+                    traitMap[tr->name] = tr;
+                }
             }
         }
         for (const auto& im : root->impls) {
+            std::string fullTarget = im->targetName;
+            std::string shortTarget = im->targetName;
+            size_t colonPos = shortTarget.rfind("::");
+            if (colonPos != std::string::npos) {
+                shortTarget = shortTarget.substr(colonPos + 2);
+            }
+
             if (!im->traitName.empty()) {
-                recordTraitsMap[im->targetName].push_back(im->traitName);
+                recordTraitsMap[fullTarget].push_back(im->traitName);
+                if (shortTarget != fullTarget) {
+                    recordTraitsMap[shortTarget].push_back(im->traitName);
+                }
             }
             for (const auto& fn : im->methods) {
-                implMethodsMap[im->targetName].push_back(fn.get());
+                implMethodsMap[fullTarget].push_back(fn.get());
+                if (shortTarget != fullTarget) {
+                    implMethodsMap[shortTarget].push_back(fn.get());
+                }
             }
         }
     }
@@ -929,6 +946,30 @@ std::string CodeGen::genRecordDefinition(const RecordNode* rec, int indentLevel)
         }
         out << " {}\n";
     }
+
+    out << "\n" << ind << "    std::string to_json() const {\n";
+    out << ind << "        std::ostringstream __ss;\n";
+    out << ind << "        __ss << \"{\";\n";
+    for (size_t i = 0; i < rec->fields.size(); ++i) {
+        std::string fName = sanitizeName(rec->fields[i].name);
+        if (i > 0) out << ind << "        __ss << \", \";\n";
+        out << ind << "        __ss << \"\\\"" << fName << "\\\": \";\n";
+        if (rec->fields[i].type == "string") {
+            out << ind << "        __ss << \"\\\"\" << " << fName << " << \"\\\"\";\n";
+        } else if (rec->fields[i].type == "bool") {
+            out << ind << "        __ss << (" << fName << " ? \"true\" : \"false\");\n";
+        } else {
+            out << ind << "        __ss << " << fName << ";\n";
+        }
+    }
+    out << ind << "        __ss << \"}\";\n";
+    out << ind << "        return __ss.str();\n";
+    out << ind << "    }\n";
+
+    out << "\n" << ind << "    friend std::ostream& operator<<(std::ostream& os, const " << sanitizeName(rec->name) << "& obj) {\n";
+    out << ind << "        os << obj.to_json();\n";
+    out << ind << "        return os;\n";
+    out << ind << "    }\n";
 
     auto it = implMethodsMap.find(rec->name);
     if (it != implMethodsMap.end()) {

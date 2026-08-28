@@ -60,8 +60,10 @@ struct Parameter {
     std::string type;
 };
 
-struct StatementNode : public ASTNode {};
-
+struct StatementNode : public ASTNode {
+    int lineNumber = 1;
+    virtual ~StatementNode() = default;
+};
 struct ComptimeBlockExprNode : public ExpressionNode {
     std::vector<std::unique_ptr<StatementNode>> body;
 };
@@ -318,5 +320,6 @@ struct ProgramNode : public ASTNode {
 
     ProgramNode() : packageName("") {}
 };
+
 
 #endif

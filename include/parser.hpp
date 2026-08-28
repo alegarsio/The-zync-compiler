@@ -10,7 +10,7 @@
 class Parser {
 public:
     explicit Parser(const std::vector<Token>& tokens);
-    std::unique_ptr<ProgramNode> parseProgram();
+    std::unique_ptr<ProgramNode> parseProgram(const std::string& defaultPkgName = "");
 
 private:
     std::vector<Token> tokens;
@@ -55,6 +55,5 @@ private:
     std::unique_ptr<ExpressionNode> parseArrayLiteral();
     std::unique_ptr<ExpressionNode> parseMapLiteral();
 };
-
 
 #endif
