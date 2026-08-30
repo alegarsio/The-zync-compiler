@@ -23,6 +23,7 @@ private:
 
     std::unordered_map<std::string, const TraitNode*> traitMap;
     std::unordered_map<std::string, const RecordNode*> recordMap;
+    std::unordered_map<std::string, const EnumNode*> enumMap;
     std::unordered_map<std::string, std::vector<std::string>> recordTraitsMap;
     std::unordered_map<std::string, std::vector<const FunctionNode*>> implMethodsMap;
 
@@ -34,6 +35,8 @@ private:
     std::string genFunction(const FunctionNode* fn, int indentLevel, const std::string& enclosingRecord = "", bool isVirtualOverride = false);
     std::string genTraitDefinition(const TraitNode* tr, int indentLevel);
     std::string genRecordDefinition(const RecordNode* rec, int indentLevel);
+    std::string genEnumDefinition(const EnumNode* en, int indentLevel);
+    std::string genMod(const ModNode* mod, int indentLevel);
     std::string genPackage(const PackageNode* pkg, int indentLevel);
 };
 

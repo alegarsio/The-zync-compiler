@@ -10,10 +10,13 @@ enum class TokenType {
     STRING_LITERAL,
     CHAR_LITERAL,
     PKG,
+    MOD,
+    PUB,
     IMPORT,
     FN,
     RETURN,
     RECORD,
+    ENUM,
     TRAIT,
     IMPL,
     MATCH,
@@ -64,7 +67,9 @@ enum class TokenType {
     RBRACE,
     LBRACKET,
     RBRACKET,
-    UNKNOWN
+    UNKNOWN,
+    AT_CPP_HEADER,
+    AT_C_HEADER
 };
 
 struct Token {

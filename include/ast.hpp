@@ -6,6 +6,11 @@
 #include <memory>
 #include <utility>
 
+enum class Visibility {
+    PUBLIC,
+    PRIVATE
+};
+
 enum class LiteralType {
     STRING,
     CHAR,
@@ -64,6 +69,7 @@ struct StatementNode : public ASTNode {
     int lineNumber = 1;
     virtual ~StatementNode() = default;
 };
+
 struct ComptimeBlockExprNode : public ExpressionNode {
     std::vector<std::unique_ptr<StatementNode>> body;
 };
@@ -137,9 +143,10 @@ struct VariableDeclNode : public StatementNode {
     std::string name;
     std::unique_ptr<ExpressionNode> value;
     bool isComptime;
+    Visibility visibility;
 
-    VariableDeclNode(const std::string& t, const std::string& n, std::unique_ptr<ExpressionNode> v, bool comptime = false)
-        : type(t), name(n), value(std::move(v)), isComptime(comptime) {}
+    VariableDeclNode(const std::string& t, const std::string& n, std::unique_ptr<ExpressionNode> v, bool comptime = false, Visibility vis = Visibility::PRIVATE)
+        : type(t), name(n), value(std::move(v)), isComptime(comptime), visibility(vis) {}
 };
 
 struct AssignmentNode : public StatementNode {
@@ -238,13 +245,31 @@ struct IfNode : public StatementNode {
 struct RecordField {
     std::string name;
     std::string type;
+    Visibility visibility;
 };
 
 struct RecordNode : public ASTNode {
     std::string name;
     std::vector<RecordField> fields;
+    Visibility visibility;
 
-    explicit RecordNode(const std::string& n) : name(n) {}
+    explicit RecordNode(const std::string& n, Visibility vis = Visibility::PRIVATE)
+        : name(n), visibility(vis) {}
+};
+
+struct EnumVariant {
+    std::string name;
+    std::string value;
+};
+
+struct EnumNode : public ASTNode {
+    std::string name;
+    std::string underlyingType;
+    std::vector<EnumVariant> variants;
+    Visibility visibility;
+
+    explicit EnumNode(const std::string& n, const std::string& uType = "", Visibility vis = Visibility::PRIVATE)
+        : name(n), underlyingType(uType), visibility(vis) {}
 };
 
 struct TraitMethodSignature {
@@ -256,8 +281,10 @@ struct TraitMethodSignature {
 struct TraitNode : public ASTNode {
     std::string name;
     std::vector<TraitMethodSignature> methods;
+    Visibility visibility;
 
-    explicit TraitNode(const std::string& n) : name(n) {}
+    explicit TraitNode(const std::string& n, Visibility vis = Visibility::PRIVATE)
+        : name(n), visibility(vis) {}
 };
 
 struct FunctionNode : public ASTNode {
@@ -266,9 +293,10 @@ struct FunctionNode : public ASTNode {
     std::string returnType;
     std::vector<std::unique_ptr<StatementNode>> body;
     bool isComptime;
+    Visibility visibility;
 
-    FunctionNode(const std::string& n, const std::string& retType, bool comptime = false)
-        : name(n), returnType(retType), isComptime(comptime) {}
+    FunctionNode(const std::string& n, const std::string& retType, bool comptime = false, Visibility vis = Visibility::PRIVATE)
+        : name(n), returnType(retType), isComptime(comptime), visibility(vis) {}
 };
 
 struct TestBlockNode : public ASTNode {
@@ -291,6 +319,7 @@ enum class ImportKind {
     ZYNC_FILE,
     CPP_USER_HEADER,
     CPP_SYS_HEADER,
+    C_HEADER,
     PACKAGE
 };
 
@@ -299,6 +328,15 @@ struct ImportNode : public ASTNode {
     std::string target;
 
     ImportNode(ImportKind k, const std::string& t) : kind(k), target(t) {}
+};
+
+struct ModNode : public ASTNode {
+    std::string name;
+    std::vector<std::unique_ptr<ASTNode>> members;
+    Visibility visibility;
+
+    explicit ModNode(const std::string& n, Visibility vis = Visibility::PRIVATE)
+        : name(n), visibility(vis) {}
 };
 
 struct PackageNode : public ASTNode {
@@ -312,6 +350,8 @@ struct ProgramNode : public ASTNode {
     std::string packageName;
     std::vector<std::unique_ptr<ImportNode>> imports;
     std::vector<std::unique_ptr<PackageNode>> packages;
+    std::vector<std::unique_ptr<ModNode>> modules;
+    std::vector<std::unique_ptr<EnumNode>> enums;
     std::vector<std::unique_ptr<TraitNode>> traits;
     std::vector<std::unique_ptr<RecordNode>> records;
     std::vector<std::unique_ptr<ImplNode>> impls;
@@ -320,6 +360,5 @@ struct ProgramNode : public ASTNode {
 
     ProgramNode() : packageName("") {}
 };
-
 
 #endif

@@ -21,15 +21,18 @@ private:
     void advance();
     bool match(TokenType type);
 
+    Visibility parseVisibility();
     std::string parseType();
     std::vector<Parameter> parseParameterList();
 
     std::vector<std::unique_ptr<ImportNode>> parseImport();
-    std::unique_ptr<RecordNode> parseRecord();
-    std::unique_ptr<TraitNode> parseTrait();
+    std::unique_ptr<RecordNode> parseRecord(Visibility vis);
+    std::unique_ptr<EnumNode> parseEnum(Visibility vis);
+    std::unique_ptr<ModNode> parseMod(Visibility vis);
+    std::unique_ptr<TraitNode> parseTrait(Visibility vis);
     std::unique_ptr<ImplNode> parseImpl();
     std::unique_ptr<PackageNode> parsePackage();
-    std::unique_ptr<FunctionNode> parseFunction();
+    std::unique_ptr<FunctionNode> parseFunction(Visibility vis);
     std::unique_ptr<TestBlockNode> parseTestBlock();
 
     std::unique_ptr<StatementNode> parseStatement();
@@ -37,7 +40,7 @@ private:
     std::unique_ptr<StatementNode> parseIf();
     std::unique_ptr<StatementNode> parseMatch();
     std::unique_ptr<StatementNode> parseFor();
-    std::unique_ptr<StatementNode> parseVariableDecl();
+    std::unique_ptr<StatementNode> parseVariableDecl(Visibility vis = Visibility::PRIVATE);
     std::unique_ptr<StatementNode> parseAssignment();
     std::unique_ptr<StatementNode> parseIncDec();
     std::unique_ptr<StatementNode> parsePrint();
