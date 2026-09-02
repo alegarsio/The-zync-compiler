@@ -71,6 +71,10 @@ std::vector<Token> Lexer::tokenize() {
 
             if (ident == "fn") {
                 tokens.push_back({TokenType::FN, ident});
+            } else if (ident == "async") {
+                tokens.push_back({TokenType::ASYNC, ident});
+            } else if (ident == "await") {
+                tokens.push_back({TokenType::AWAIT, ident});
             } else if (ident == "return") {
                 tokens.push_back({TokenType::RETURN, ident});
             } else if (ident == "pkg") {
@@ -93,6 +97,8 @@ std::vector<Token> Lexer::tokenize() {
                 tokens.push_back({TokenType::MATCH, ident});
             } else if (ident == "var") {
                 tokens.push_back({TokenType::VAR, ident});
+            } else if (ident == "val") {
+                tokens.push_back({TokenType::VAL, ident});
             } else if (ident == "in") {
                 tokens.push_back({TokenType::IN_KW, ident});
             } else if (ident == "cmpt" || ident == "comptime") {

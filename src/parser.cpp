@@ -9,7 +9,7 @@ static const std::unordered_set<std::string> knownCppStdHeaders = {
     "chrono", "random", "thread", "mutex", "filesystem", "cstdio",
     "cstdlib", "cstring", "ctime", "memory", "utility", "sstream",
     "fstream", "functional", "numeric", "cctype", "tuple", "list",
-    "deque", "set", "unordered_set", "unordered_map", "queue", "stack", "array"};
+    "deque", "set", "unordered_set", "unordered_map", "queue", "stack", "array", "future"};
 
 Parser::Parser(const std::vector<Token> &tokens) : tokens(tokens), index(0) {}
 
@@ -54,10 +54,10 @@ Visibility Parser::parseVisibility()
 
 std::string Parser::parseType()
 {
-    if (current().type == TokenType::VAR)
+    if (current().type == TokenType::VAR || current().type == TokenType::VAL)
     {
         advance();
-        return "var";
+        return "auto";
     }
     if (current().type == TokenType::NUMBER_LITERAL)
     {
@@ -451,9 +451,9 @@ std::unique_ptr<ModNode> Parser::parseMod(Visibility vis)
                     if (test)
                         modNode->members.push_back(std::move(test));
                 }
-                else if (current().type == TokenType::FN || current().type == TokenType::COMPTIME)
+                else if (current().type == TokenType::FN || current().type == TokenType::COMPTIME || current().type == TokenType::ASYNC)
                 {
-                    if (current().type == TokenType::COMPTIME && peekNext().type != TokenType::FN)
+                    if (current().type == TokenType::COMPTIME && peekNext().type != TokenType::FN && peekNext().type != TokenType::ASYNC)
                     {
                         auto v = parseVariableDecl(memberVis);
                         if (v)
@@ -466,7 +466,7 @@ std::unique_ptr<ModNode> Parser::parseMod(Visibility vis)
                             modNode->members.push_back(std::move(fn));
                     }
                 }
-                else if (current().type == TokenType::VAR || current().type == TokenType::IDENTIFIER)
+                else if (current().type == TokenType::VAR || current().type == TokenType::VAL || current().type == TokenType::IDENTIFIER)
                 {
                     auto v = parseVariableDecl(memberVis);
                     if (v)
@@ -573,7 +573,7 @@ std::unique_ptr<ImplNode> Parser::parseImpl()
             while (current().type != TokenType::RBRACE && current().type != TokenType::END_OF_FILE)
             {
                 Visibility fnVis = parseVisibility();
-                if (current().type == TokenType::FN || current().type == TokenType::COMPTIME)
+                if (current().type == TokenType::FN || current().type == TokenType::COMPTIME || current().type == TokenType::ASYNC)
                 {
                     auto fn = parseFunction(fnVis);
                     if (fn)
@@ -657,9 +657,9 @@ std::unique_ptr<PackageNode> Parser::parsePackage()
                     if (test)
                         pkgNode->members.push_back(std::move(test));
                 }
-                else if (current().type == TokenType::FN || current().type == TokenType::COMPTIME)
+                else if (current().type == TokenType::FN || current().type == TokenType::COMPTIME || current().type == TokenType::ASYNC)
                 {
-                    if (current().type == TokenType::COMPTIME && peekNext().type != TokenType::FN)
+                    if (current().type == TokenType::COMPTIME && peekNext().type != TokenType::FN && peekNext().type != TokenType::ASYNC)
                     {
                         auto v = parseVariableDecl(memberVis);
                         if (v)
@@ -672,7 +672,7 @@ std::unique_ptr<PackageNode> Parser::parsePackage()
                             pkgNode->members.push_back(std::move(fn));
                     }
                 }
-                else if (current().type == TokenType::VAR || current().type == TokenType::IDENTIFIER)
+                else if (current().type == TokenType::VAR || current().type == TokenType::VAL || current().type == TokenType::IDENTIFIER)
                 {
                     auto v = parseVariableDecl(memberVis);
                     if (v)
@@ -772,6 +772,11 @@ std::unique_ptr<ExpressionNode> Parser::parsePrimary()
             compBlock->body = parseBlock();
             return compBlock;
         }
+    }
+    if (match(TokenType::AWAIT))
+    {
+        auto target = parsePostfix();
+        return std::make_unique<AwaitExprNode>(std::move(target));
     }
     if (match(TokenType::MATCH))
     {
@@ -893,45 +898,56 @@ std::unique_ptr<ExpressionNode> Parser::parsePrimary()
         }
         return nullptr;
     }
+
+    bool isAsyncLambda = false;
+    if (current().type == TokenType::ASYNC && peekNext().type == TokenType::LPAREN)
+    {
+        isAsyncLambda = true;
+        advance();
+    }
+
     if (current().type == TokenType::LPAREN)
     {
         size_t lookAhead = index;
         int parenDepth = 0;
-        bool isLambda = false;
+        bool isLambda = isAsyncLambda;
 
-        while (lookAhead < tokens.size())
+        if (!isLambda)
         {
-            if (tokens[lookAhead].type == TokenType::LPAREN)
-                parenDepth++;
-            else if (tokens[lookAhead].type == TokenType::RPAREN)
+            while (lookAhead < tokens.size())
             {
-                parenDepth--;
-                if (parenDepth == 0)
+                if (tokens[lookAhead].type == TokenType::LPAREN)
+                    parenDepth++;
+                else if (tokens[lookAhead].type == TokenType::RPAREN)
                 {
-                    size_t afterParen = lookAhead + 1;
-                    if (afterParen < tokens.size())
+                    parenDepth--;
+                    if (parenDepth == 0)
                     {
-                        if (tokens[afterParen].type == TokenType::FAT_ARROW)
+                        size_t afterParen = lookAhead + 1;
+                        if (afterParen < tokens.size())
                         {
-                            isLambda = true;
-                        }
-                        else if (tokens[afterParen].type == TokenType::ARROW)
-                        {
-                            size_t afterArrow = afterParen + 1;
-                            while (afterArrow < tokens.size() && tokens[afterArrow].type != TokenType::FAT_ARROW && tokens[afterArrow].type != TokenType::SEMICOLON && tokens[afterArrow].type != TokenType::LBRACE)
-                            {
-                                afterArrow++;
-                            }
-                            if (afterArrow < tokens.size() && tokens[afterArrow].type == TokenType::FAT_ARROW)
+                            if (tokens[afterParen].type == TokenType::FAT_ARROW)
                             {
                                 isLambda = true;
                             }
+                            else if (tokens[afterParen].type == TokenType::ARROW)
+                            {
+                                size_t afterArrow = afterParen + 1;
+                                while (afterArrow < tokens.size() && tokens[afterArrow].type != TokenType::FAT_ARROW && tokens[afterArrow].type != TokenType::SEMICOLON && tokens[afterArrow].type != TokenType::LBRACE)
+                                {
+                                    afterArrow++;
+                                }
+                                if (afterArrow < tokens.size() && tokens[afterArrow].type == TokenType::FAT_ARROW)
+                                {
+                                    isLambda = true;
+                                }
+                            }
                         }
+                        break;
                     }
-                    break;
                 }
+                lookAhead++;
             }
-            lookAhead++;
         }
 
         if (isLambda)
@@ -968,7 +984,7 @@ std::unique_ptr<ExpressionNode> Parser::parsePrimary()
                     if (d == 1)
                     {
                         TokenType t = tokens[look].type;
-                        if (t == TokenType::VAR || t == TokenType::RETURN ||
+                        if (t == TokenType::VAR || t == TokenType::VAL || t == TokenType::RETURN ||
                             t == TokenType::IF || t == TokenType::FOR_KW ||
                             t == TokenType::PRINT || t == TokenType::PRINTLN ||
                             t == TokenType::BREAK || t == TokenType::CONTINUE)
@@ -1383,15 +1399,17 @@ std::unique_ptr<StatementNode> Parser::parseIncDec()
 std::unique_ptr<StatementNode> Parser::parseVariableDecl(Visibility vis)
 {
     bool isComptime = match(TokenType::COMPTIME);
+    bool isMut = true;
 
     if (match(TokenType::VAR))
     {
+        isMut = true;
         if (current().type == TokenType::IDENTIFIER)
         {
             std::string varName = current().value;
             advance();
 
-            std::string typeName = "var";
+            std::string typeName = "auto";
             if (match(TokenType::COLON))
             {
                 typeName = parseType();
@@ -1401,7 +1419,31 @@ std::unique_ptr<StatementNode> Parser::parseVariableDecl(Visibility vis)
             {
                 auto valExpr = parseExpression();
                 match(TokenType::SEMICOLON);
-                return std::make_unique<VariableDeclNode>(typeName, varName, std::move(valExpr), isComptime, vis);
+                return std::make_unique<VariableDeclNode>(typeName, varName, std::move(valExpr), isComptime, isMut, vis);
+            }
+        }
+        return nullptr;
+    }
+
+    if (match(TokenType::VAL))
+    {
+        isMut = false;
+        if (current().type == TokenType::IDENTIFIER)
+        {
+            std::string varName = current().value;
+            advance();
+
+            std::string typeName = "auto";
+            if (match(TokenType::COLON))
+            {
+                typeName = parseType();
+            }
+
+            if (match(TokenType::ASSIGN))
+            {
+                auto valExpr = parseExpression();
+                match(TokenType::SEMICOLON);
+                return std::make_unique<VariableDeclNode>(typeName, varName, std::move(valExpr), isComptime, isMut, vis);
             }
         }
         return nullptr;
@@ -1417,7 +1459,7 @@ std::unique_ptr<StatementNode> Parser::parseVariableDecl(Visibility vis)
         {
             auto valExpr = parseExpression();
             match(TokenType::SEMICOLON);
-            return std::make_unique<VariableDeclNode>(typeName, varName, std::move(valExpr), isComptime, vis);
+            return std::make_unique<VariableDeclNode>(typeName, varName, std::move(valExpr), isComptime, true, vis);
         }
     }
     return nullptr;
@@ -1469,19 +1511,45 @@ std::unique_ptr<StatementNode> Parser::parseFor()
     {
         forNode->kind = ForKind::FOR_RANGE;
 
-        match(TokenType::VAR);
+        if (current().type == TokenType::VAR || current().type == TokenType::VAL)
+        {
+            advance();
+        }
 
-        std::string iterName = current().value;
-        advance();
+        std::string iterName = "";
+        if (current().type == TokenType::IDENTIFIER || current().type == TokenType::UNDERSCORE)
+        {
+            iterName = current().value;
+            advance();
+
+            if (match(TokenType::COMMA))
+            {
+                if (current().type == TokenType::VAR || current().type == TokenType::VAL)
+                {
+                    advance();
+                }
+                std::string secondVar = current().value;
+                advance();
+                iterName = "[" + iterName + ", " + secondVar + "]";
+            }
+        }
+
+        if (hasParen)
+        {
+            if (current().type == TokenType::RPAREN)
+            {
+                advance();
+            }
+        }
 
         match(TokenType::COLON);
 
         forNode->iteratorVar = iterName;
         forNode->iterable = parseExpression();
 
-        if (hasParen)
+        if (hasParen && current().type == TokenType::RPAREN)
         {
-            match(TokenType::RPAREN);
+            advance();
         }
 
         forNode->body = parseBlock();
@@ -1648,19 +1716,19 @@ std::unique_ptr<StatementNode> Parser::parseStatement()
     }
     if (current().type == TokenType::COMPTIME)
     {
-        if (peekNext().type == TokenType::FN)
+        if (peekNext().type == TokenType::FN || peekNext().type == TokenType::ASYNC)
         {
             return nullptr;
         }
         return parseVariableDecl();
     }
-    if (current().type == TokenType::VAR)
+    if (current().type == TokenType::VAR || current().type == TokenType::VAL)
     {
         return parseVariableDecl();
     }
-    if (current().type == TokenType::IDENTIFIER)
+    if (current().type == TokenType::IDENTIFIER || current().type == TokenType::AWAIT)
     {
-        if (peekNext().type == TokenType::PLUS_PLUS || peekNext().type == TokenType::MINUS_MINUS)
+        if (current().type == TokenType::IDENTIFIER && (peekNext().type == TokenType::PLUS_PLUS || peekNext().type == TokenType::MINUS_MINUS))
         {
             return parseIncDec();
         }
@@ -1709,6 +1777,7 @@ std::unique_ptr<StatementNode> Parser::parseStatement()
 std::unique_ptr<FunctionNode> Parser::parseFunction(Visibility vis)
 {
     bool isComptime = match(TokenType::COMPTIME);
+    bool isAsync = match(TokenType::ASYNC);
     match(TokenType::FN);
 
     if (current().type == TokenType::IDENTIFIER)
@@ -1718,13 +1787,13 @@ std::unique_ptr<FunctionNode> Parser::parseFunction(Visibility vis)
 
         std::vector<Parameter> params = parseParameterList();
 
-        std::string retType = "void";
+        std::string retType = isAsync ? "Task<void>" : "void";
         if (match(TokenType::ARROW))
         {
             retType = parseType();
         }
 
-        auto funcNode = std::make_unique<FunctionNode>(fnName, retType, isComptime, vis);
+        auto funcNode = std::make_unique<FunctionNode>(fnName, retType, isComptime, isAsync, vis);
         funcNode->params = std::move(params);
         funcNode->body = parseBlock();
         return funcNode;
@@ -1942,7 +2011,7 @@ std::unique_ptr<ProgramNode> Parser::parseProgram(const std::string &defaultPkgN
         }
         else if (current().type == TokenType::COMPTIME)
         {
-            if (peekNext().type == TokenType::FN)
+            if (peekNext().type == TokenType::FN || peekNext().type == TokenType::ASYNC)
             {
                 auto fn = parseFunction(topVis);
                 if (fn)
@@ -1962,7 +2031,7 @@ std::unique_ptr<ProgramNode> Parser::parseProgram(const std::string &defaultPkgN
                 advance();
             }
         }
-        else if (current().type == TokenType::FN)
+        else if (current().type == TokenType::FN || current().type == TokenType::ASYNC)
         {
             auto fn = parseFunction(topVis);
             if (fn)

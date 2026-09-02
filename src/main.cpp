@@ -35,6 +35,11 @@ int main(int argc, char* argv[]) {
         return handleServe(target) ? 0 : 1;
     }
 
+    if (command == "watch" || command == "-watch" || command == "--watch" || command == "-w") {
+        std::string targetFile = (argc >= 3) ? argv[2] : "main.zy";
+        return handleWatch(targetFile) ? 0 : 1;
+    }
+
     if (command == "create" || command == "-create" || command == "--create" || command == "new") {
         if (argc < 3) {
             std::cerr << "\033[1;31m[Error]\033[0m Missing argument. Usage: zync create <project_name> OR zync create test <name> OR zync create native <name>" << std::endl;

@@ -30,7 +30,11 @@ static const std::unordered_set<std::string> cppKeywords = {
 
 static std::string sanitizeName(const std::string &name)
 {
-    if (name == "Ok" || name == "Err" || name == "Result" || name == "Tuple" || name == "_")
+    if (name == "Ok" || name == "Err" || name == "Result" || name == "Tuple" || name == "_" || name == "auto" || name == "Task")
+    {
+        return name;
+    }
+    if (name.front() == '[' && name.back() == ']')
     {
         return name;
     }
@@ -145,9 +149,17 @@ std::string CodeGen::convertType(const std::string &zyType)
     if (zyType.empty())
         return "";
 
-    if (zyType == "var")
+    if (zyType == "var" || zyType == "val" || zyType == "auto")
     {
         return "auto";
+    }
+
+    if (zyType.rfind("Task<", 0) == 0 && zyType.back() == '>')
+    {
+        std::string inner = zyType.substr(5, zyType.size() - 6);
+        while (!inner.empty() && inner.front() == ' ') inner.erase(0, 1);
+        while (!inner.empty() && inner.back() == ' ') inner.pop_back();
+        return "std::future<" + convertType(inner) + ">";
     }
 
     if (zyType.rfind("Tuple<", 0) == 0 && zyType.back() == '>')
@@ -232,8 +244,14 @@ std::string CodeGen::convertType(const std::string &zyType)
         {
             std::string keyType = inner.substr(0, commaPos);
             std::string valType = inner.substr(commaPos + 1);
-            while (!valType.empty() && valType[0] == ' ')
+            while (!keyType.empty() && keyType.front() == ' ')
+                keyType.erase(0, 1);
+            while (!keyType.empty() && keyType.back() == ' ')
+                keyType.pop_back();
+            while (!valType.empty() && valType.front() == ' ')
                 valType.erase(0, 1);
+            while (!valType.empty() && valType.back() == ' ')
+                valType.pop_back();
             return "std::map<" + convertType(keyType) + ", " + convertType(valType) + ">";
         }
     }
@@ -320,6 +338,11 @@ std::string CodeGen::genExpression(const ExpressionNode *expr)
 {
     if (!expr)
         return "";
+
+    if (auto awaitExpr = dynamic_cast<const AwaitExprNode *>(expr))
+    {
+        return genExpression(awaitExpr->target.get()) + ".get()";
+    }
 
     if (auto compBlock = dynamic_cast<const ComptimeBlockExprNode *>(expr))
     {
@@ -497,7 +520,7 @@ std::string CodeGen::genExpression(const ExpressionNode *expr)
     {
         if (lit->litType == LiteralType::STRING)
         {
-            return "\"" + lit->value + "\"";
+            return "std::string(\"" + lit->value + "\")";
         }
         if (lit->litType == LiteralType::CHAR)
         {
@@ -557,8 +580,14 @@ std::string CodeGen::genExpression(const ExpressionNode *expr)
             {
                 std::string keyType = inner.substr(0, commaPos);
                 std::string valType = inner.substr(commaPos + 1);
-                while (!valType.empty() && valType[0] == ' ')
+                while (!keyType.empty() && keyType.front() == ' ')
+                    keyType.erase(0, 1);
+                while (!keyType.empty() && keyType.back() == ' ')
+                    keyType.pop_back();
+                while (!valType.empty() && valType.front() == ' ')
                     valType.erase(0, 1);
+                while (!valType.empty() && valType.back() == ' ')
+                    valType.pop_back();
                 return "std::map<" + convertType(keyType) + ", " + convertType(valType) + ">{}";
             }
         }
@@ -604,8 +633,14 @@ std::string CodeGen::genExpression(const ExpressionNode *expr)
                 {
                     std::string keyType = inner.substr(0, commaPos);
                     std::string valType = inner.substr(commaPos + 1);
-                    while (!valType.empty() && valType[0] == ' ')
+                    while (!keyType.empty() && keyType.front() == ' ')
+                        keyType.erase(0, 1);
+                    while (!keyType.empty() && keyType.back() == ' ')
+                        keyType.pop_back();
+                    while (!valType.empty() && valType.front() == ' ')
                         valType.erase(0, 1);
+                    while (!valType.empty() && valType.back() == ' ')
+                        valType.pop_back();
                     out << "std::map<" + convertType(keyType) + ", " + convertType(valType) + ">";
                 }
             }
@@ -658,7 +693,17 @@ std::string CodeGen::genExpression(const ExpressionNode *expr)
     if (auto lambda = dynamic_cast<const LambdaNode *>(expr))
     {
         std::ostringstream out;
-        out << "[&](";
+        bool isTaskRet = (lambda->returnType.rfind("Task<", 0) == 0);
+        std::string innerTaskType = "void";
+        if (isTaskRet && lambda->returnType.back() == '>')
+        {
+            std::string raw = lambda->returnType.substr(5, lambda->returnType.size() - 6);
+            while (!raw.empty() && raw.front() == ' ') raw.erase(0, 1);
+            while (!raw.empty() && raw.back() == ' ') raw.pop_back();
+            innerTaskType = convertType(raw);
+        }
+
+        out << "[=](";
         for (size_t i = 0; i < lambda->params.size(); ++i)
         {
             out << convertType(lambda->params[i].type) << " " << sanitizeName(lambda->params[i].name);
@@ -666,31 +711,54 @@ std::string CodeGen::genExpression(const ExpressionNode *expr)
                 out << ", ";
         }
         out << ") ";
+
         if (!lambda->returnType.empty())
         {
             out << "-> " << convertType(lambda->returnType) << " ";
         }
-        if (lambda->isExpressionBody)
+
+        if (isTaskRet)
         {
-            out << "{ return " << genExpression(lambda->exprBody.get()) << "; }";
+            out << "{\n";
+            out << getIndent(2) << "return std::async(std::launch::async, [=]() mutable -> " << innerTaskType << " {\n";
+            if (lambda->isExpressionBody)
+            {
+                out << getIndent(3) << "return " << genExpression(lambda->exprBody.get()) << ";\n";
+            }
+            else
+            {
+                for (const auto &stmt : lambda->blockBody)
+                {
+                    out << genStatement(stmt.get(), 3);
+                }
+            }
+            out << getIndent(2) << "});\n";
+            out << getIndent(1) << "}";
         }
         else
         {
-            out << "{\n";
-            for (size_t i = 0; i < lambda->blockBody.size(); ++i)
+            if (lambda->isExpressionBody)
             {
-                const auto &stmt = lambda->blockBody[i];
-                if (i == lambda->blockBody.size() - 1 && !lambda->returnType.empty() && lambda->returnType != "void")
-                {
-                    if (auto exprStmt = dynamic_cast<const ExpressionStatementNode *>(stmt.get()))
-                    {
-                        out << getIndent(2) << "return " << genExpression(exprStmt->expr.get()) << ";\n";
-                        continue;
-                    }
-                }
-                out << genStatement(stmt.get(), 2);
+                out << "{ return " << genExpression(lambda->exprBody.get()) << "; }";
             }
-            out << "    }";
+            else
+            {
+                out << "{\n";
+                for (size_t i = 0; i < lambda->blockBody.size(); ++i)
+                {
+                    const auto &stmt = lambda->blockBody[i];
+                    if (i == lambda->blockBody.size() - 1 && !lambda->returnType.empty() && lambda->returnType != "void")
+                    {
+                        if (auto exprStmt = dynamic_cast<const ExpressionStatementNode *>(stmt.get()))
+                        {
+                            out << getIndent(2) << "return " << genExpression(exprStmt->expr.get()) << ";\n";
+                            continue;
+                        }
+                    }
+                    out << genStatement(stmt.get(), 2);
+                }
+                out << "    }";
+            }
         }
         return out.str();
     }
@@ -751,9 +819,7 @@ std::string CodeGen::genExpression(const ExpressionNode *expr)
             out << "{" << genExpression(mapLit->entries[i].first.get()) << ", "
                 << genExpression(mapLit->entries[i].second.get()) << "}";
             if (i + 1 < mapLit->entries.size())
-            {
                 out << ", ";
-            }
         }
         out << "}";
         return out.str();
@@ -793,7 +859,9 @@ std::string CodeGen::genStatement(const StatementNode *stmt, int indentLevel)
         }
         else
         {
-            out << ind << cppType << " " << sanitizeName(varDecl->name) << " = " << genExpression(varDecl->value.get()) << ";\n";
+            bool isFutureType = (varDecl->type.rfind("Task<", 0) == 0 || cppType.rfind("std::future", 0) == 0);
+            std::string prefix = (varDecl->isMutable || isFutureType) ? "" : "const ";
+            out << ind << prefix << cppType << " " << sanitizeName(varDecl->name) << " = " << genExpression(varDecl->value.get()) << ";\n";
         }
         return out.str();
     }
@@ -1057,7 +1125,16 @@ std::string CodeGen::genStatement(const StatementNode *stmt, int indentLevel)
     {
         if (forNode->kind == ForKind::FOR_RANGE)
         {
-            std::string varName = forNode->iteratorVar == "_" ? "__unused" : sanitizeName(forNode->iteratorVar);
+            std::string varName;
+            if (forNode->iteratorVar.front() == '[' && forNode->iteratorVar.back() == ']')
+            {
+                varName = forNode->iteratorVar;
+            }
+            else
+            {
+                varName = forNode->iteratorVar == "_" ? "__unused" : sanitizeName(forNode->iteratorVar);
+            }
+
             out << ind << "for (auto&& " << varName << " : " << genExpression(forNode->iterable.get()) << ") {\n";
             for (const auto &s : forNode->body)
             {
@@ -1096,7 +1173,8 @@ std::string CodeGen::genStatement(const StatementNode *stmt, int indentLevel)
             {
                 if (auto vd = dynamic_cast<const VariableDeclNode *>(forNode->init.get()))
                 {
-                    initStr = convertType(vd->type) + " " + sanitizeName(vd->name) + " = " + genExpression(vd->value.get());
+                    std::string prefix = vd->isMutable ? "" : "const ";
+                    initStr = prefix + convertType(vd->type) + " " + sanitizeName(vd->name) + " = " + genExpression(vd->value.get());
                 }
                 else if (auto as = dynamic_cast<const AssignmentNode *>(forNode->init.get()))
                 {
@@ -1154,6 +1232,39 @@ std::string CodeGen::genFunction(const FunctionNode *fn, int indentLevel, const 
     }
 
     std::string fnName = (fn->name == "main") ? "main" : sanitizeName(fn->name);
+
+    if (fn->isAsync && fn->name != "main")
+    {
+        std::string innerType = "void";
+        if (fn->returnType.rfind("Task<", 0) == 0 && fn->returnType.back() == '>')
+        {
+            std::string rawInner = fn->returnType.substr(5, fn->returnType.size() - 6);
+            while (!rawInner.empty() && rawInner.front() == ' ') rawInner.erase(0, 1);
+            while (!rawInner.empty() && rawInner.back() == ' ') rawInner.pop_back();
+            innerType = convertType(rawInner);
+        }
+
+        out << retType << " " << fnName << "(";
+        size_t startParam = hasSelf ? 1 : 0;
+        for (size_t i = startParam; i < fn->params.size(); ++i)
+        {
+            out << convertType(fn->params[i].type) << " " << sanitizeName(fn->params[i].name);
+            if (i + 1 < fn->params.size())
+            {
+                out << ", ";
+            }
+        }
+        out << ") {\n";
+        out << ind << "    return std::async(std::launch::async, [=]() mutable -> " << innerType << " {\n";
+        for (const auto &stmt : fn->body)
+        {
+            out << genStatement(stmt.get(), indentLevel + 2);
+        }
+        out << ind << "    });\n";
+        out << ind << "}\n";
+        return out.str();
+    }
+
     out << retType << " " << fnName << "(";
 
     size_t startParam = hasSelf ? 1 : 0;
@@ -1271,9 +1382,37 @@ std::string CodeGen::genRecordDefinition(const RecordNode *rec, int indentLevel)
 
     out << " {\n";
 
+    std::vector<RecordField> privFields;
+    std::vector<RecordField> pubFields;
+
     for (const auto &f : rec->fields)
     {
-        out << ind << "    " << convertType(f.type) << " " << sanitizeName(f.name) << ";\n";
+        if (f.visibility == Visibility::PUBLIC)
+            pubFields.push_back(f);
+        else
+            privFields.push_back(f);
+    }
+
+    auto resolveFieldType = [&](const std::string &t) -> std::string {
+        if (t == rec->name) {
+            return "std::shared_ptr<" + sanitizeName(rec->name) + ">";
+        }
+        return convertType(t);
+    };
+
+    if (!privFields.empty())
+    {
+        out << ind << "private:\n";
+        for (const auto &f : privFields)
+        {
+            out << ind << "    " << resolveFieldType(f.type) << " " << sanitizeName(f.name) << ";\n";
+        }
+    }
+
+    out << ind << "public:\n";
+    for (const auto &f : pubFields)
+    {
+        out << ind << "    " << resolveFieldType(f.type) << " " << sanitizeName(f.name) << ";\n";
     }
 
     out << ind << "    " << sanitizeName(rec->name) << "() = default;\n";
@@ -1283,7 +1422,7 @@ std::string CodeGen::genRecordDefinition(const RecordNode *rec, int indentLevel)
         out << ind << "    " << sanitizeName(rec->name) << "(";
         for (size_t i = 0; i < rec->fields.size(); ++i)
         {
-            out << convertType(rec->fields[i].type) << " " << sanitizeName(rec->fields[i].name);
+            out << resolveFieldType(rec->fields[i].type) << " " << sanitizeName(rec->fields[i].name);
             if (i + 1 < rec->fields.size())
                 out << ", ";
         }
@@ -1296,6 +1435,41 @@ std::string CodeGen::genRecordDefinition(const RecordNode *rec, int indentLevel)
                 out << ", ";
         }
         out << " {}\n";
+
+        bool hasRecursiveField = false;
+        for (const auto &f : rec->fields) {
+            if (f.type == rec->name) {
+                hasRecursiveField = true;
+                break;
+            }
+        }
+
+        if (hasRecursiveField) {
+            out << ind << "    " << sanitizeName(rec->name) << "(";
+            for (size_t i = 0; i < rec->fields.size(); ++i)
+            {
+                if (rec->fields[i].type == rec->name) {
+                    out << "const " << sanitizeName(rec->name) << "& " << sanitizeName(rec->fields[i].name);
+                } else {
+                    out << convertType(rec->fields[i].type) << " " << sanitizeName(rec->fields[i].name);
+                }
+                if (i + 1 < rec->fields.size())
+                    out << ", ";
+            }
+            out << ") : ";
+            for (size_t i = 0; i < rec->fields.size(); ++i)
+            {
+                std::string fName = sanitizeName(rec->fields[i].name);
+                if (rec->fields[i].type == rec->name) {
+                    out << fName << "(std::make_shared<" << sanitizeName(rec->name) << ">(" << fName << "))";
+                } else {
+                    out << fName << "(" << fName << ")";
+                }
+                if (i + 1 < rec->fields.size())
+                    out << ", ";
+            }
+            out << " {}\n";
+        }
     }
 
     out << "\n"
@@ -1309,7 +1483,11 @@ std::string CodeGen::genRecordDefinition(const RecordNode *rec, int indentLevel)
         if (i > 0)
             out << ind << "        __ss << \", \";\n";
         out << ind << "        __ss << \"\\\"" << fName << "\\\": \";\n";
-        if (fType == "string")
+        if (fType == rec->name)
+        {
+            out << ind << "        if (" << fName << ") __ss << " << fName << "->to_json(); else __ss << \"null\";\n";
+        }
+        else if (fType == "string")
         {
             out << ind << "        __ss << \"\\\"\" << " << fName << " << \"\\\"\";\n";
         }
@@ -1374,36 +1552,123 @@ std::string CodeGen::genMod(const ModNode *mod, int indentLevel)
     std::ostringstream out;
     std::string ind = getIndent(indentLevel);
 
-    out << ind << "namespace " << sanitizeName(mod->name) << " {\n";
+    out << ind << "class " << sanitizeName(mod->name) << " {\n";
+
+    std::vector<const ASTNode *> privTypes;
+    std::vector<const ASTNode *> pubTypes;
+    std::vector<const FunctionNode *> privFuncs;
+    std::vector<const FunctionNode *> pubFuncs;
+    std::vector<const ASTNode *> privOthers;
+    std::vector<const ASTNode *> pubOthers;
+
     for (const auto &member : mod->members)
     {
         if (auto tr = dynamic_cast<const TraitNode *>(member.get()))
         {
-            out << genTraitDefinition(tr, indentLevel + 1) << "\n";
+            if (tr->visibility == Visibility::PUBLIC) pubTypes.push_back(tr);
+            else privTypes.push_back(tr);
         }
         else if (auto rec = dynamic_cast<const RecordNode *>(member.get()))
         {
-            out << genRecordDefinition(rec, indentLevel + 1) << "\n";
+            if (rec->visibility == Visibility::PUBLIC) pubTypes.push_back(rec);
+            else privTypes.push_back(rec);
         }
         else if (auto en = dynamic_cast<const EnumNode *>(member.get()))
         {
-            out << genEnumDefinition(en, indentLevel + 1) << "\n";
+            if (en->visibility == Visibility::PUBLIC) pubTypes.push_back(en);
+            else privTypes.push_back(en);
         }
         else if (auto fn = dynamic_cast<const FunctionNode *>(member.get()))
         {
-            out << genFunction(fn, indentLevel + 1) << "\n";
+            if (fn->visibility == Visibility::PUBLIC) pubFuncs.push_back(fn);
+            else privFuncs.push_back(fn);
         }
         else if (auto subMod = dynamic_cast<const ModNode *>(member.get()))
         {
-            out << genMod(subMod, indentLevel + 1) << "\n";
+            if (subMod->visibility == Visibility::PUBLIC) pubOthers.push_back(subMod);
+            else privOthers.push_back(subMod);
         }
-        else if (auto stmt = dynamic_cast<const StatementNode *>(member.get()))
+        else
         {
-            out << genStatement(stmt, indentLevel + 1);
+            privOthers.push_back(member.get());
         }
     }
-    out << ind << "}\n";
 
+    out << ind << "public:\n";
+    out << ind << "    " << sanitizeName(mod->name) << "() = delete;\n\n";
+
+    for (const auto *t : pubTypes)
+    {
+        if (auto tr = dynamic_cast<const TraitNode *>(t))
+        {
+            out << genTraitDefinition(tr, indentLevel + 1) << "\n";
+        }
+        else if (auto rec = dynamic_cast<const RecordNode *>(t))
+        {
+            out << genRecordDefinition(rec, indentLevel + 1) << "\n";
+        }
+        else if (auto en = dynamic_cast<const EnumNode *>(t))
+        {
+            out << genEnumDefinition(en, indentLevel + 1) << "\n";
+        }
+    }
+
+    if (!privTypes.empty() || !privFuncs.empty() || !privOthers.empty())
+    {
+        out << ind << "private:\n";
+        for (const auto *t : privTypes)
+        {
+            if (auto tr = dynamic_cast<const TraitNode *>(t))
+            {
+                out << genTraitDefinition(tr, indentLevel + 1) << "\n";
+            }
+            else if (auto rec = dynamic_cast<const RecordNode *>(t))
+            {
+                out << genRecordDefinition(rec, indentLevel + 1) << "\n";
+            }
+            else if (auto en = dynamic_cast<const EnumNode *>(t))
+            {
+                out << genEnumDefinition(en, indentLevel + 1) << "\n";
+            }
+        }
+        for (const auto *f : privFuncs)
+        {
+            out << genFunction(f, indentLevel + 1, mod->name) << "\n";
+        }
+        for (const auto *o : privOthers)
+        {
+            if (auto subMod = dynamic_cast<const ModNode *>(o))
+            {
+                out << genMod(subMod, indentLevel + 1) << "\n";
+            }
+            else if (auto stmt = dynamic_cast<const StatementNode *>(o))
+            {
+                out << genStatement(stmt, indentLevel + 1);
+            }
+        }
+    }
+
+    if (!pubFuncs.empty() || !pubOthers.empty())
+    {
+        out << ind << "public:\n";
+        for (const auto *f : pubFuncs)
+        {
+            out << genFunction(f, indentLevel + 1, mod->name) << "\n";
+        }
+        for (const auto *o : pubOthers)
+        {
+            if (auto subMod = dynamic_cast<const ModNode *>(o))
+            {
+                out << genMod(subMod, indentLevel + 1) << "\n";
+            }
+            else if (auto stmt = dynamic_cast<const StatementNode *>(o))
+            {
+                out << genStatement(stmt, indentLevel + 1);
+            }
+        }
+    }
+
+    out << ind << "};\n";
     return out.str();
 }
 
@@ -1680,11 +1945,15 @@ std::string CodeGen::generate()
     fullCode << "#include <cassert>\n";
     fullCode << "#include <vector>\n";
     fullCode << "#include <set>\n";
+    fullCode << "#include <future>\n";
     fullCode << "#include <type_traits>\n";
     if (needsMap)
         fullCode << "#include <map>\n";
 
     fullCode << "\nusing namespace std;\n\n";
+
+    fullCode << "template <typename T>\n";
+    fullCode << "using Task = std::future<T>;\n\n";
 
     fullCode << "template <typename T, typename E>\n";
     fullCode << "struct Result {\n";
@@ -1775,7 +2044,10 @@ std::string CodeGen::generate()
 
     if (!packagesCode.str().empty())
     {
-        fullCode << packagesCode.str() << "\n";
+        for (const auto &pkg : root->packages)
+        {
+            packagesCode << genPackage(pkg.get(), 0) << "\n";
+        }
     }
 
     for (const auto &pkg : importedPackages)

@@ -19,6 +19,7 @@
 #include <array>
 #include <cstdio>
 #include <memory>
+#include <dlfcn.h>
 
 static uint64_t computeHash(const std::string& str) {
     uint64_t hash = 14695981039346656037ULL;
@@ -493,7 +494,9 @@ bool handleBuild(const std::string& inputPath, const std::string& customOutputNa
         compileCmd = "g++ -std=c++17 -I. -Iinclude -Inative -Idependencies -Idependencies/wrapper " + includeFlags + " " + optFlags + " -c " + mainCpp.string() + " -o " + mainObj.string();
     }
 
-    std::cout << "\033[1;36m[Zync Parallel]\033[0m (1/1) Compiling " << zyPath.filename().string() << "..." << std::endl;
+    if (!isQuietMode) {
+        std::cout << "\033[1;36m[Zync Parallel]\033[0m (1/1) Compiling " << zyPath.filename().string() << "..." << std::endl;
+    }
     int exitCode = 0;
     std::string compileOutput = execCommandCapture(compileCmd, exitCode);
     if (exitCode != 0) {
@@ -583,6 +586,132 @@ bool handleRun(const std::string& targetName, bool isWasm, bool isTestRun) {
     std::string runCommand = "./" + exePath.string();
     int runResult = std::system(runCommand.c_str());
     return (runResult == 0);
+}
+
+bool handleWatch(const std::string& targetFile) {
+    fs::path zyPath(targetFile);
+    if (!zyPath.has_extension()) {
+        zyPath += ".zy";
+    }
+
+    if (!fs::exists(zyPath)) {
+        std::cerr << "\033[1;31m[Error]\033[0m File " << targetFile << " not found." << std::endl;
+        return false;
+    }
+
+    std::string defaultOutName = zyPath.stem().string();
+    fs::path buildDir = "build";
+    fs::path objDir = buildDir / "obj";
+    if (!fs::exists(buildDir)) fs::create_directories(buildDir);
+    if (!fs::exists(objDir)) fs::create_directories(objDir);
+
+    std::string userLinkFlags = "";
+    std::string userIncludeFlags = "";
+
+#if defined(__APPLE__)
+    if (fs::exists("/opt/homebrew/include")) userIncludeFlags += " -I/opt/homebrew/include";
+    if (fs::exists("/opt/homebrew/lib")) userLinkFlags += " -L/opt/homebrew/lib";
+    if (fs::exists("/usr/local/include")) userIncludeFlags += " -I/usr/local/include";
+    if (fs::exists("/usr/local/lib")) userLinkFlags += " -L/usr/local/lib";
+#endif
+
+    ZyncConfig toml = loadZyncToml();
+    if (toml.loaded) {
+        for (const auto& lib : toml.linkLibs) userLinkFlags += " -l" + lib;
+        for (const auto& ldir : toml.libDirs) userLinkFlags += " -L" + ldir;
+        for (const auto& idir : toml.includeDirs) userIncludeFlags += " -I" + idir;
+    }
+
+    std::cout << "\033[1;36m[Zync Live JIT Runner (dlopen)]\033[0m Watching \033[1m" << zyPath.string() << "\033[0m in-memory..." << std::endl;
+    std::cout << "\033[1;33m(Press Ctrl+C to stop watcher)\033[0m\n" << std::endl;
+
+    uint64_t lastHash = 0;
+    uint64_t sessionCounter = 0;
+
+    while (true) {
+        std::vector<fs::path> allDepFiles;
+        std::unordered_set<std::string> visitedGlobal;
+        auto globalMerged = std::make_unique<ProgramNode>();
+
+        if (parseFileRecursive(zyPath, globalMerged.get(), visitedGlobal, allDepFiles)) {
+            uint64_t currentHash = 0;
+            for (const auto& dep : allDepFiles) {
+                currentHash ^= computeFileHash(dep);
+            }
+
+            if (currentHash != lastHash) {
+                lastHash = currentHash;
+                sessionCounter++;
+
+                std::cout << "\033[2J\033[1;1H" << std::flush;
+                std::cout << "\033[1;32m[Zync JIT Sync]\033[0m Source updated -> Compiling shared module to RAM...\n" << std::endl;
+
+                fs::path dylibCpp = objDir / ("__zync_jit_" + std::to_string(sessionCounter) + ".cpp");
+#if defined(__APPLE__)
+                fs::path dylibPath = objDir / ("__zync_jit_" + std::to_string(sessionCounter) + ".dylib");
+#else
+                fs::path dylibPath = objDir / ("__zync_jit_" + std::to_string(sessionCounter) + ".so");
+#endif
+
+                CodeGen codegen(globalMerged.get());
+                std::string rawCpp = codegen.generate();
+
+                std::string dylibCppSource = 
+                    rawCpp + 
+                    "\n\nextern \"C\" int zy_main() {\n"
+                    "    return main();\n"
+                    "}\n";
+
+                std::ofstream out(dylibCpp);
+                out << dylibCppSource;
+                out.close();
+
+                std::string compileDylibCmd = "g++ -std=c++17 -shared -fPIC -O0 -I. -Iinclude -Inative -Idependencies -Idependencies/wrapper " 
+                                             + userIncludeFlags + " " + dylibCpp.string() + " " + userLinkFlags + " -o " + dylibPath.string();
+
+                int compileExit = 0;
+                auto tStart = std::chrono::high_resolution_clock::now();
+                std::string compileOutput = execCommandCapture(compileDylibCmd, compileExit);
+                auto tEnd = std::chrono::high_resolution_clock::now();
+                double durMs = std::chrono::duration<double, std::milli>(tEnd - tStart).count();
+
+                if (compileExit != 0) {
+                    printZyncDiagnostic(compileOutput, zyPath.string(), dylibCpp.string());
+                    std::cerr << "\n\033[1;31m[JIT Compile Error]\033[0m Failed compiling live module." << std::endl;
+                } else {
+                    std::cout << "\033[1;32m[JIT Module Loaded]\033[0m " << dylibPath.filename().string() 
+                              << " compiled in \033[1;33m" << std::fixed << std::setprecision(2) << durMs << " ms\033[0m" << std::endl;
+
+                    void* handle = dlopen(dylibPath.c_str(), RTLD_NOW | RTLD_LOCAL);
+                    if (!handle) {
+                        std::cerr << "\033[1;31m[dlopen Error]\033[0m " << dlerror() << std::endl;
+                    } else {
+                        using ZyMainFn = int (*)();
+                        dlerror();
+                        ZyMainFn runFn = (ZyMainFn)dlsym(handle, "zy_main");
+                        const char* dlsymError = dlerror();
+
+                        if (dlsymError) {
+                            std::cerr << "\033[1;31m[dlsym Error]\033[0m " << dlsymError << std::endl;
+                        } else if (runFn) {
+                            std::cout << "\033[1;34m--- Program Output (In-Memory Execution) ---\033[0m\n" << std::endl;
+                            runFn();
+                            std::cout << "\n\033[1;34m--------------------------------------------\033[0m" << std::endl;
+                        }
+
+                        dlclose(handle);
+                    }
+                }
+
+                if (fs::exists(dylibCpp)) fs::remove(dylibCpp);
+                if (fs::exists(dylibPath)) fs::remove(dylibPath);
+            }
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+
+    return true;
 }
 
 bool handleEval(const std::string& codeSnippet) {
@@ -985,10 +1114,10 @@ void printUsage() {
     std::cout << "  ./zync create native <name>        Generate C++ native header in native/<name>/<name>.hpp" << std::endl;
     std::cout << "  ./zync add pkg <pkg_name>          Create new package file <pkg_name>.zy" << std::endl;
     std::cout << "  ./zync add test <name>             Generate test suite in tests/<name>_test.zy" << std::endl;
-    std::cout << "  ./zync add wrapper <name>          Generate wrapper for predefined dependency (e.g. crow)" << std::endl;
     std::cout << "  ./zync add native <name>           Generate C++ native binding module in native/<name>/<name>.hpp" << std::endl;
     std::cout << "  ./zync build <file.zy> [options]   Compile source file to binary (default: build/<name>)" << std::endl;
     std::cout << "  ./zync run <name> [options]        Execute compiled native binary from build/<name>" << std::endl;
+    std::cout << "  ./zync watch <file.zy>             Live execution mode with auto-sync on file save" << std::endl;
     std::cout << "  ./zync eval \"<code_snippet>\"       Instant evaluate code snippet" << std::endl;
     std::cout << "  ./zync repl                        Launch interactive REPL session" << std::endl;
     std::cout << "  ./zync serve [name]                Launch local HTTP server for WASM" << std::endl;
