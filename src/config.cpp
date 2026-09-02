@@ -158,7 +158,7 @@ bool handleAddDependency(const std::string& depName) {
         name = name.substr(0, name.length() - 2);
     }
 
-    fs::path depDir = fs::path("dependencies") / "wrapper" / name;
+    fs::path depDir = "wrapper";
     if (!fs::exists(depDir)) {
         try {
             fs::create_directories(depDir);
@@ -184,7 +184,7 @@ bool handleAddDependency(const std::string& depName) {
         std::cout << "\033[1;32m[Zync Wrapper Added]\033[0m Crow HTTP wrapper generated: '\033[1m" << crowHpp.string() << "\033[0m'" << std::endl;
         std::cout << "\033[1;36m[Zync Config]\033[0m Added 'pthread' link dependency to zync.toml" << std::endl;
         std::cout << "\nImport in your Zync code with:\n";
-        std::cout << "  import \"dependencies/wrapper/" << name << "/crow.hpp\"\n";
+        std::cout << "  import @CPPheader \"wrapper/crow\"\n";
         std::cout << "  var app = ZyncCrow::App()\n" << std::endl;
         return true;
     }

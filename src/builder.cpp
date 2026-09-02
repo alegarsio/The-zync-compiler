@@ -197,6 +197,7 @@ static void printZyncDiagnostic(const std::string& rawCppOutput, const std::stri
         std::cerr << rawCppOutput << std::endl;
     }
 }
+
 bool parseFileRecursive(const fs::path& filePath, ProgramNode* mergedProgram, std::unordered_set<std::string>& visitedFiles, std::vector<fs::path>& allDepFiles) {
     std::string canonicalPath;
     try {
@@ -267,9 +268,11 @@ bool parseFileRecursive(const fs::path& filePath, ProgramNode* mergedProgram, st
         }
     }
 
+    for (auto& en : programAST->enums) mergedProgram->enums.push_back(std::move(en));
     for (auto& tr : programAST->traits) mergedProgram->traits.push_back(std::move(tr));
     for (auto& rec : programAST->records) mergedProgram->records.push_back(std::move(rec));
     for (auto& im : programAST->impls) mergedProgram->impls.push_back(std::move(im));
+    for (auto& mod : programAST->modules) mergedProgram->modules.push_back(std::move(mod));
     for (auto& pkg : programAST->packages) mergedProgram->packages.push_back(std::move(pkg));
     for (auto& fn : programAST->functions) mergedProgram->functions.push_back(std::move(fn));
     for (auto& t : programAST->tests) mergedProgram->tests.push_back(std::move(t));

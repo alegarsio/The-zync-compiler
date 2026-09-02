@@ -42,6 +42,7 @@ struct GranularOptFlags {
 bool parseFileRecursive(const fs::path& filePath, ProgramNode* mergedProgram, std::unordered_set<std::string>& visitedFiles, std::vector<fs::path>& allDepFiles);
 bool handleBuild(const std::string& inputPath, const std::string& customOutputName, OptLevel opt, const std::string& customFlags, const GranularOptFlags& granular, SizeProfile sizeProf, bool dumpGimple, BuildTarget target = BuildTarget::NATIVE, bool forceRebuild = false, bool isQuietMode = false, unsigned int jobs = 0, const std::string& userLinkFlags = "", const std::string& userIncludeFlags = "", bool isTestBuild = false);
 bool handleRun(const std::string& targetName, bool isWasm = false, bool isTestRun = false);
+bool handleWatch(const std::string& targetFile);
 bool handleEval(const std::string& codeSnippet);
 void handleRepl();
 bool handleServe(const std::string& targetName);

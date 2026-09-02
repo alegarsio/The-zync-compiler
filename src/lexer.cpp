@@ -38,11 +38,29 @@ std::vector<Token> Lexer::tokenize() {
 
         char c = peek();
 
-        if (c == '@' && pos + 1 < src.size() && src[pos + 1] == 'c') {
-            get();
-            get();
-            tokens.push_back({TokenType::AT_C, "@c"});
-            continue;
+        if (c == '@') {
+            if (pos + 1 < src.size() && src[pos + 1] == 'c' && (pos + 2 >= src.size() || !std::isalpha(static_cast<unsigned char>(src[pos + 2])))) {
+                get();
+                get();
+                tokens.push_back({TokenType::AT_C, "@c"});
+                continue;
+            }
+            if (pos + 10 <= src.size()) {
+                std::string sub = src.substr(pos, 10);
+                if (sub == "@CPPheader" || sub == "@CPPHeader") {
+                    for (int i = 0; i < 10; ++i) get();
+                    tokens.push_back({TokenType::AT_CPP_HEADER, "@CPPheader"});
+                    continue;
+                }
+            }
+            if (pos + 8 <= src.size()) {
+                std::string sub = src.substr(pos, 8);
+                if (sub == "@CHeader" || sub == "@Cheader") {
+                    for (int i = 0; i < 8; ++i) get();
+                    tokens.push_back({TokenType::AT_C_HEADER, "@CHeader"});
+                    continue;
+                }
+            }
         }
 
         if (std::isalpha(static_cast<unsigned char>(c)) || c == '_') {
@@ -57,10 +75,16 @@ std::vector<Token> Lexer::tokenize() {
                 tokens.push_back({TokenType::RETURN, ident});
             } else if (ident == "pkg") {
                 tokens.push_back({TokenType::PKG, ident});
+            } else if (ident == "mod") {
+                tokens.push_back({TokenType::MOD, ident});
+            } else if (ident == "pub") {
+                tokens.push_back({TokenType::PUB, ident});
             } else if (ident == "import") {
                 tokens.push_back({TokenType::IMPORT, ident});
             } else if (ident == "record") {
                 tokens.push_back({TokenType::RECORD, ident});
+            } else if (ident == "enum") {
+                tokens.push_back({TokenType::ENUM, ident});
             } else if (ident == "trait") {
                 tokens.push_back({TokenType::TRAIT, ident});
             } else if (ident == "impl") {

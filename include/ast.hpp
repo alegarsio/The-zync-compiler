@@ -60,6 +60,13 @@ struct FunctionCallNode : public ExpressionNode {
         : callee(std::move(c)), args(std::move(a)) {}
 };
 
+struct AwaitExprNode : public ExpressionNode {
+    std::unique_ptr<ExpressionNode> target;
+
+    explicit AwaitExprNode(std::unique_ptr<ExpressionNode> t)
+        : target(std::move(t)) {}
+};
+
 struct Parameter {
     std::string name;
     std::string type;
@@ -143,10 +150,11 @@ struct VariableDeclNode : public StatementNode {
     std::string name;
     std::unique_ptr<ExpressionNode> value;
     bool isComptime;
+    bool isMutable;
     Visibility visibility;
 
-    VariableDeclNode(const std::string& t, const std::string& n, std::unique_ptr<ExpressionNode> v, bool comptime = false, Visibility vis = Visibility::PRIVATE)
-        : type(t), name(n), value(std::move(v)), isComptime(comptime), visibility(vis) {}
+    VariableDeclNode(const std::string& t, const std::string& n, std::unique_ptr<ExpressionNode> v, bool comptime = false, bool isMut = true, Visibility vis = Visibility::PRIVATE)
+        : type(t), name(n), value(std::move(v)), isComptime(comptime), isMutable(isMut), visibility(vis) {}
 };
 
 struct AssignmentNode : public StatementNode {
@@ -293,10 +301,11 @@ struct FunctionNode : public ASTNode {
     std::string returnType;
     std::vector<std::unique_ptr<StatementNode>> body;
     bool isComptime;
+    bool isAsync;
     Visibility visibility;
 
-    FunctionNode(const std::string& n, const std::string& retType, bool comptime = false, Visibility vis = Visibility::PRIVATE)
-        : name(n), returnType(retType), isComptime(comptime), visibility(vis) {}
+    FunctionNode(const std::string& n, const std::string& retType, bool comptime = false, bool asyncFlag = false, Visibility vis = Visibility::PRIVATE)
+        : name(n), returnType(retType), isComptime(comptime), isAsync(asyncFlag), visibility(vis) {}
 };
 
 struct TestBlockNode : public ASTNode {
