@@ -9,7 +9,7 @@ static const std::unordered_set<std::string> knownCppStdHeaders = {
     "chrono", "random", "thread", "mutex", "filesystem", "cstdio",
     "cstdlib", "cstring", "ctime", "memory", "utility", "sstream",
     "fstream", "functional", "numeric", "cctype", "tuple", "list",
-    "deque", "set", "unordered_set", "unordered_map", "queue", "stack", "array", "future"};
+    "deque", "set", "unordered_set", "unordered_map", "queue", "stack", "array", "future", "any"};
 
 Parser::Parser(const std::vector<Token> &tokens) : tokens(tokens), index(0) {}
 
@@ -413,6 +413,34 @@ std::unique_ptr<ModNode> Parser::parseMod(Visibility vis)
             auto modNode = std::make_unique<ModNode>(modName, vis);
             while (current().type != TokenType::RBRACE && current().type != TokenType::END_OF_FILE)
             {
+                std::vector<AttributeNode> pendingAttrs;
+                while (current().type == TokenType::LBRACKET && peekNext().type == TokenType::HASH)
+                {
+                    advance();
+                    advance();
+                    std::string target = current().value;
+                    advance();
+                    match(TokenType::DOT);
+                    std::string action = current().value;
+                    advance();
+                    std::vector<std::string> args;
+                    if (match(TokenType::LPAREN))
+                    {
+                        while (current().type != TokenType::RPAREN && current().type != TokenType::END_OF_FILE)
+                        {
+                            if (current().type == TokenType::STRING_LITERAL || current().type == TokenType::NUMBER_LITERAL || current().type == TokenType::IDENTIFIER)
+                            {
+                                args.push_back(current().value);
+                                advance();
+                            }
+                            match(TokenType::COMMA);
+                        }
+                        match(TokenType::RPAREN);
+                    }
+                    match(TokenType::RBRACKET);
+                    pendingAttrs.push_back({target, action, args});
+                }
+
                 Visibility memberVis = parseVisibility();
 
                 if (current().type == TokenType::MOD)
@@ -463,7 +491,10 @@ std::unique_ptr<ModNode> Parser::parseMod(Visibility vis)
                     {
                         auto fn = parseFunction(memberVis);
                         if (fn)
+                        {
+                            fn->attributes = std::move(pendingAttrs);
                             modNode->members.push_back(std::move(fn));
+                        }
                     }
                 }
                 else if (current().type == TokenType::VAR || current().type == TokenType::VAL || current().type == TokenType::IDENTIFIER)
@@ -613,6 +644,34 @@ std::unique_ptr<PackageNode> Parser::parsePackage()
             auto pkgNode = std::make_unique<PackageNode>(pkgName);
             while (current().type != TokenType::RBRACE && current().type != TokenType::END_OF_FILE)
             {
+                std::vector<AttributeNode> pendingAttrs;
+                while (current().type == TokenType::LBRACKET && peekNext().type == TokenType::HASH)
+                {
+                    advance();
+                    advance();
+                    std::string target = current().value;
+                    advance();
+                    match(TokenType::DOT);
+                    std::string action = current().value;
+                    advance();
+                    std::vector<std::string> args;
+                    if (match(TokenType::LPAREN))
+                    {
+                        while (current().type != TokenType::RPAREN && current().type != TokenType::END_OF_FILE)
+                        {
+                            if (current().type == TokenType::STRING_LITERAL || current().type == TokenType::NUMBER_LITERAL || current().type == TokenType::IDENTIFIER)
+                            {
+                                args.push_back(current().value);
+                                advance();
+                            }
+                            match(TokenType::COMMA);
+                        }
+                        match(TokenType::RPAREN);
+                    }
+                    match(TokenType::RBRACKET);
+                    pendingAttrs.push_back({target, action, args});
+                }
+
                 Visibility memberVis = parseVisibility();
 
                 if (current().type == TokenType::PKG)
@@ -669,7 +728,10 @@ std::unique_ptr<PackageNode> Parser::parsePackage()
                     {
                         auto fn = parseFunction(memberVis);
                         if (fn)
+                        {
+                            fn->attributes = std::move(pendingAttrs);
                             pkgNode->members.push_back(std::move(fn));
+                        }
                     }
                 }
                 else if (current().type == TokenType::VAR || current().type == TokenType::VAL || current().type == TokenType::IDENTIFIER)
@@ -764,6 +826,72 @@ std::unique_ptr<ExpressionNode> Parser::parseMapLiteral()
 
 std::unique_ptr<ExpressionNode> Parser::parsePrimary()
 {
+    if (match(TokenType::INTERPOLATED_STRING))
+    {
+        std::string raw = tokens[index - 1].value;
+        std::unique_ptr<ExpressionNode> rootExpr = nullptr;
+        size_t i = 0;
+
+        while (i < raw.size())
+        {
+            if (raw[i] == '{')
+            {
+                size_t end = raw.find('}', i + 1);
+                if (end != std::string::npos)
+                {
+                    std::string innerCode = raw.substr(i + 1, end - i - 1);
+                    i = end + 1;
+
+                    Lexer subLexer(innerCode);
+                    auto subTokens = subLexer.tokenize();
+                    Parser subParser(subTokens);
+                    auto innerExpr = subParser.parseExpression();
+
+                    if (!rootExpr)
+                    {
+                        rootExpr = std::move(innerExpr);
+                    }
+                    else
+                    {
+                        rootExpr = std::make_unique<BinaryOpNode>(std::move(rootExpr), "+", std::move(innerExpr));
+                    }
+                    continue;
+                }
+            }
+
+            size_t nextOpen = raw.find('{', i);
+            std::string textPart;
+            if (nextOpen == std::string::npos)
+            {
+                textPart = raw.substr(i);
+                i = raw.size();
+            }
+            else
+            {
+                textPart = raw.substr(i, nextOpen - i);
+                i = nextOpen;
+            }
+
+            if (!textPart.empty())
+            {
+                auto strLit = std::make_unique<LiteralNode>(textPart, LiteralType::STRING);
+                if (!rootExpr)
+                {
+                    rootExpr = std::move(strLit);
+                }
+                else
+                {
+                    rootExpr = std::make_unique<BinaryOpNode>(std::move(rootExpr), "+", std::move(strLit));
+                }
+            }
+        }
+
+        if (!rootExpr)
+        {
+            return std::make_unique<LiteralNode>("", LiteralType::STRING);
+        }
+        return rootExpr;
+    }
     if (match(TokenType::COMPTIME))
     {
         if (current().type == TokenType::LBRACE)
@@ -1795,7 +1923,52 @@ std::unique_ptr<FunctionNode> Parser::parseFunction(Visibility vis)
 
         auto funcNode = std::make_unique<FunctionNode>(fnName, retType, isComptime, isAsync, vis);
         funcNode->params = std::move(params);
-        funcNode->body = parseBlock();
+
+        if (match(TokenType::FAT_ARROW))
+        {
+            if (current().type == TokenType::LBRACE)
+            {
+                size_t look = index + 1;
+                int depth = 0;
+                bool isMapLiteral = false;
+
+                while (look < tokens.size() && tokens[look].type != TokenType::RBRACE && tokens[look].type != TokenType::END_OF_FILE)
+                {
+                    if (tokens[look].type == TokenType::LBRACE)
+                        depth++;
+                    else if (tokens[look].type == TokenType::RBRACE)
+                        depth--;
+                    else if (tokens[look].type == TokenType::COLON && depth == 0)
+                    {
+                        isMapLiteral = true;
+                        break;
+                    }
+                    look++;
+                }
+
+                if (isMapLiteral)
+                {
+                    auto expr = parseMapLiteral();
+                    match(TokenType::SEMICOLON);
+                    funcNode->body.push_back(std::make_unique<ReturnNode>(std::move(expr)));
+                }
+                else
+                {
+                    funcNode->body = parseBlock();
+                }
+            }
+            else
+            {
+                auto expr = parseExpression();
+                match(TokenType::SEMICOLON);
+                funcNode->body.push_back(std::make_unique<ReturnNode>(std::move(expr)));
+            }
+        }
+        else
+        {
+            funcNode->body = parseBlock();
+        }
+
         return funcNode;
     }
     return nullptr;
@@ -1846,6 +2019,34 @@ std::unique_ptr<ProgramNode> Parser::parseProgram(const std::string &defaultPkgN
 
     while (current().type != TokenType::END_OF_FILE)
     {
+        std::vector<AttributeNode> pendingAttrs;
+        while (current().type == TokenType::LBRACKET && peekNext().type == TokenType::HASH)
+        {
+            advance();
+            advance();
+            std::string target = current().value;
+            advance();
+            match(TokenType::DOT);
+            std::string action = current().value;
+            advance();
+            std::vector<std::string> args;
+            if (match(TokenType::LPAREN))
+            {
+                while (current().type != TokenType::RPAREN && current().type != TokenType::END_OF_FILE)
+                {
+                    if (current().type == TokenType::STRING_LITERAL || current().type == TokenType::NUMBER_LITERAL || current().type == TokenType::IDENTIFIER)
+                    {
+                        args.push_back(current().value);
+                        advance();
+                    }
+                    match(TokenType::COMMA);
+                }
+                match(TokenType::RPAREN);
+            }
+            match(TokenType::RBRACKET);
+            pendingAttrs.push_back({target, action, args});
+        }
+
         Visibility topVis = parseVisibility();
 
         if (current().type == TokenType::PKG)
@@ -2016,6 +2217,7 @@ std::unique_ptr<ProgramNode> Parser::parseProgram(const std::string &defaultPkgN
                 auto fn = parseFunction(topVis);
                 if (fn)
                 {
+                    fn->attributes = std::move(pendingAttrs);
                     if (activePkgNode)
                     {
                         activePkgNode->members.push_back(std::move(fn));
@@ -2036,6 +2238,7 @@ std::unique_ptr<ProgramNode> Parser::parseProgram(const std::string &defaultPkgN
             auto fn = parseFunction(topVis);
             if (fn)
             {
+                fn->attributes = std::move(pendingAttrs);
                 if (activePkgNode)
                 {
                     activePkgNode->members.push_back(std::move(fn));

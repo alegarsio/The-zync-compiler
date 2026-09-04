@@ -15,6 +15,7 @@ std::string getCrowTemplate() {
 #include <type_traits>
 #include <tuple>
 #include <fstream>
+#include <memory>
 
 namespace ZyncCrow {
 
@@ -97,6 +98,27 @@ namespace ZyncCrow {
         }
     };
 
+    struct Response {
+        int code = 200;
+        std::string body;
+        std::map<std::string, std::string> headers;
+
+        void status(int statusCode) {
+            code = statusCode;
+        }
+
+        void send(const std::string& b) {
+            body = b;
+        }
+
+        void json(const std::string& b) {
+            headers["Content-Type"] = "application/json";
+            body = b;
+        }
+    };
+
+    using Middleware = std::function<bool(Request&, Response&)>;
+
     inline std::string render(const std::string& filename, const std::map<std::string, std::string>& ctx = {}) {
         crow::mustache::context c;
         for (const auto& [k, v] : ctx) {
@@ -158,10 +180,41 @@ namespace ZyncCrow {
 
     class App;
 
+    class RouteHandler {
+    private:
+        std::shared_ptr<std::vector<Middleware>> middlewares;
+
+    public:
+        explicit RouteHandler(std::shared_ptr<std::vector<Middleware>> mws)
+            : middlewares(std::move(mws)) {}
+
+        RouteHandler& middleware(Middleware mw) {
+            if (middlewares) {
+                middlewares->push_back(std::move(mw));
+            }
+            return *this;
+        }
+
+        RouteHandler& middleware(std::function<bool()> simpleMw) {
+            if (middlewares) {
+                middlewares->push_back([simpleMw](Request&, Response& res) {
+                    if (!simpleMw()) {
+                        res.status(403);
+                        res.json("{\"error\":\"Forbidden\"}");
+                        return false;
+                    }
+                    return true;
+                });
+            }
+            return *this;
+        }
+    };
+
     class Group {
     private:
         App& app;
         std::string prefix;
+        std::vector<Middleware> groupMiddlewares;
 
         std::string normalizePath(const std::string& subRoute) const {
             if (subRoute.empty() || subRoute == "/") return prefix;
@@ -171,8 +224,8 @@ namespace ZyncCrow {
         }
 
     public:
-        Group(App& parentApp, std::string basePrefix)
-            : app(parentApp), prefix(std::move(basePrefix)) {
+        Group(App& parentApp, std::string basePrefix, std::vector<Middleware> mws = {})
+            : app(parentApp), prefix(std::move(basePrefix)), groupMiddlewares(std::move(mws)) {
             if (prefix.empty()) prefix = "/";
             if (prefix.front() != '/') prefix = "/" + prefix;
             while (prefix.length() > 1 && prefix.back() == '/') {
@@ -180,31 +233,40 @@ namespace ZyncCrow {
             }
         }
 
-        template <typename F>
-        void get(const std::string& route, F handler);
+        void use(Middleware mw) {
+            groupMiddlewares.push_back(std::move(mw));
+        }
 
         template <typename F>
-        void post(const std::string& route, F handler);
+        RouteHandler get(const std::string& route, F handler);
 
         template <typename F>
-        void put(const std::string& route, F handler);
+        RouteHandler post(const std::string& route, F handler);
 
         template <typename F>
-        void del(const std::string& route, F handler);
+        RouteHandler put(const std::string& route, F handler);
 
         template <typename F>
-        void html(const std::string& route, F handler);
+        RouteHandler del(const std::string& route, F handler);
+
+        template <typename F>
+        RouteHandler html(const std::string& route, F handler);
 
         Group group(const std::string& subPrefix) {
-            return Group(app, normalizePath(subPrefix));
+            return Group(app, normalizePath(subPrefix), groupMiddlewares);
         }
     };
 
     class App {
     public:
         crow::SimpleApp server;
+        std::vector<Middleware> globalMiddlewares;
 
         App() = default;
+
+        void use(Middleware mw) {
+            globalMiddlewares.push_back(std::move(mw));
+        }
 
         static Request parseRequest(const crow::request& req) {
             Request zReq;
@@ -219,17 +281,38 @@ namespace ZyncCrow {
         }
 
         template <bool IsHtml, typename F, typename... Args>
-        auto makeCrowCallback(F handler, std::tuple<Args...>) {
+        auto makeCrowCallback(std::shared_ptr<std::vector<Middleware>> localMws, F handler, std::tuple<Args...>) {
             using FullArgsTuple = typename HandlerTraits<F>::ArgsTuple;
             using FirstArg = typename TupleFirst<FullArgsTuple>::type;
 
-            if constexpr (std::is_same_v<std::decay_t<FirstArg>, Request>) {
-                return [handler](const crow::request& req, Args... args) {
-                    crow::response res;
-                    res.set_header("Access-Control-Allow-Origin", "*");
-                    Request zReq = parseRequest(req);
+            return [this, localMws, handler](const crow::request& req, Args... args) {
+                crow::response res;
+                res.set_header("Access-Control-Allow-Origin", "*");
+                Request zReq = parseRequest(req);
+                Response zRes;
+
+                for (const auto& mw : globalMiddlewares) {
+                    if (!mw(zReq, zRes)) {
+                        res.code = (zRes.code != 200) ? zRes.code : 403;
+                        for (const auto& [k, v] : zRes.headers) res.set_header(k, v);
+                        res.body = zRes.body.empty() ? "{\"error\":\"Forbidden\"}" : zRes.body;
+                        return res;
+                    }
+                }
+
+                if (localMws) {
+                    for (const auto& mw : *localMws) {
+                        if (!mw(zReq, zRes)) {
+                            res.code = (zRes.code != 200) ? zRes.code : 403;
+                            for (const auto& [k, v] : zRes.headers) res.set_header(k, v);
+                            res.body = zRes.body.empty() ? "{\"error\":\"Forbidden\"}" : zRes.body;
+                            return res;
+                        }
+                    }
+                }
+
+                if constexpr (std::is_same_v<std::decay_t<FirstArg>, Request>) {
                     auto result = handler(zReq, args...);
-                    
                     if constexpr (IsHtml) {
                         res.set_header("Content-Type", "text/html; charset=utf-8");
                         res.body = result;
@@ -251,14 +334,8 @@ namespace ZyncCrow {
                             res.body = toJson(result);
                         }
                     }
-                    return res;
-                };
-            } else {
-                return [handler](Args... args) {
-                    crow::response res;
-                    res.set_header("Access-Control-Allow-Origin", "*");
+                } else {
                     auto result = handler(args...);
-                    
                     if constexpr (IsHtml) {
                         res.set_header("Content-Type", "text/html; charset=utf-8");
                         res.body = result;
@@ -280,69 +357,79 @@ namespace ZyncCrow {
                             res.body = toJson(result);
                         }
                     }
-                    return res;
-                };
-            }
+                }
+                return res;
+            };
         }
 
         template <typename F>
-        void get(const std::string& route, F handler) {
+        RouteHandler get(const std::string& route, F handler, std::vector<Middleware> baseMws = {}) {
+            auto mws = std::make_shared<std::vector<Middleware>>(std::move(baseMws));
             using FullArgs = typename HandlerTraits<F>::ArgsTuple;
             using FirstArg = typename TupleFirst<FullArgs>::type;
             if constexpr (std::is_same_v<std::decay_t<FirstArg>, Request>) {
                 using RestArgs = typename TupleDropFirst<FullArgs>::type;
-                server.route_dynamic(route)(makeCrowCallback<false>(handler, RestArgs{}));
+                server.route_dynamic(route)(makeCrowCallback<false>(mws, handler, RestArgs{}));
             } else {
-                server.route_dynamic(route)(makeCrowCallback<false>(handler, FullArgs{}));
+                server.route_dynamic(route)(makeCrowCallback<false>(mws, handler, FullArgs{}));
             }
+            return RouteHandler(mws);
         }
 
         template <typename F>
-        void post(const std::string& route, F handler) {
+        RouteHandler post(const std::string& route, F handler, std::vector<Middleware> baseMws = {}) {
+            auto mws = std::make_shared<std::vector<Middleware>>(std::move(baseMws));
             using FullArgs = typename HandlerTraits<F>::ArgsTuple;
             using FirstArg = typename TupleFirst<FullArgs>::type;
             if constexpr (std::is_same_v<std::decay_t<FirstArg>, Request>) {
                 using RestArgs = typename TupleDropFirst<FullArgs>::type;
-                server.route_dynamic(route).methods(crow::HTTPMethod::POST)(makeCrowCallback<false>(handler, RestArgs{}));
+                server.route_dynamic(route).methods(crow::HTTPMethod::POST)(makeCrowCallback<false>(mws, handler, RestArgs{}));
             } else {
-                server.route_dynamic(route).methods(crow::HTTPMethod::POST)(makeCrowCallback<false>(handler, FullArgs{}));
+                server.route_dynamic(route).methods(crow::HTTPMethod::POST)(makeCrowCallback<false>(mws, handler, FullArgs{}));
             }
+            return RouteHandler(mws);
         }
 
         template <typename F>
-        void put(const std::string& route, F handler) {
+        RouteHandler put(const std::string& route, F handler, std::vector<Middleware> baseMws = {}) {
+            auto mws = std::make_shared<std::vector<Middleware>>(std::move(baseMws));
             using FullArgs = typename HandlerTraits<F>::ArgsTuple;
             using FirstArg = typename TupleFirst<FullArgs>::type;
             if constexpr (std::is_same_v<std::decay_t<FirstArg>, Request>) {
                 using RestArgs = typename TupleDropFirst<FullArgs>::type;
-                server.route_dynamic(route).methods(crow::HTTPMethod::PUT)(makeCrowCallback<false>(handler, RestArgs{}));
+                server.route_dynamic(route).methods(crow::HTTPMethod::PUT)(makeCrowCallback<false>(mws, handler, RestArgs{}));
             } else {
-                server.route_dynamic(route).methods(crow::HTTPMethod::PUT)(makeCrowCallback<false>(handler, FullArgs{}));
+                server.route_dynamic(route).methods(crow::HTTPMethod::PUT)(makeCrowCallback<false>(mws, handler, FullArgs{}));
             }
+            return RouteHandler(mws);
         }
 
         template <typename F>
-        void del(const std::string& route, F handler) {
+        RouteHandler del(const std::string& route, F handler, std::vector<Middleware> baseMws = {}) {
+            auto mws = std::make_shared<std::vector<Middleware>>(std::move(baseMws));
             using FullArgs = typename HandlerTraits<F>::ArgsTuple;
             using FirstArg = typename TupleFirst<FullArgs>::type;
             if constexpr (std::is_same_v<std::decay_t<FirstArg>, Request>) {
                 using RestArgs = typename TupleDropFirst<FullArgs>::type;
-                server.route_dynamic(route).methods(crow::HTTPMethod::DELETE)(makeCrowCallback<false>(handler, RestArgs{}));
+                server.route_dynamic(route).methods(crow::HTTPMethod::DELETE)(makeCrowCallback<false>(mws, handler, RestArgs{}));
             } else {
-                server.route_dynamic(route).methods(crow::HTTPMethod::DELETE)(makeCrowCallback<false>(handler, FullArgs{}));
+                server.route_dynamic(route).methods(crow::HTTPMethod::DELETE)(makeCrowCallback<false>(mws, handler, FullArgs{}));
             }
+            return RouteHandler(mws);
         }
 
         template <typename F>
-        void html(const std::string& route, F handler) {
+        RouteHandler html(const std::string& route, F handler, std::vector<Middleware> baseMws = {}) {
+            auto mws = std::make_shared<std::vector<Middleware>>(std::move(baseMws));
             using FullArgs = typename HandlerTraits<F>::ArgsTuple;
             using FirstArg = typename TupleFirst<FullArgs>::type;
             if constexpr (std::is_same_v<std::decay_t<FirstArg>, Request>) {
                 using RestArgs = typename TupleDropFirst<FullArgs>::type;
-                server.route_dynamic(route)(makeCrowCallback<true>(handler, RestArgs{}));
+                server.route_dynamic(route)(makeCrowCallback<true>(mws, handler, RestArgs{}));
             } else {
-                server.route_dynamic(route)(makeCrowCallback<true>(handler, FullArgs{}));
+                server.route_dynamic(route)(makeCrowCallback<true>(mws, handler, FullArgs{}));
             }
+            return RouteHandler(mws);
         }
 
         Group group(const std::string& prefix) {
@@ -363,28 +450,28 @@ namespace ZyncCrow {
     };
 
     template <typename F>
-    void Group::get(const std::string& route, F handler) {
-        app.get(normalizePath(route), handler);
+    RouteHandler Group::get(const std::string& route, F handler) {
+        return app.get(normalizePath(route), handler, groupMiddlewares);
     }
 
     template <typename F>
-    void Group::post(const std::string& route, F handler) {
-        app.post(normalizePath(route), handler);
+    RouteHandler Group::post(const std::string& route, F handler) {
+        return app.post(normalizePath(route), handler, groupMiddlewares);
     }
 
     template <typename F>
-    void Group::put(const std::string& route, F handler) {
-        app.put(normalizePath(route), handler);
+    RouteHandler Group::put(const std::string& route, F handler) {
+        return app.put(normalizePath(route), handler, groupMiddlewares);
     }
 
     template <typename F>
-    void Group::del(const std::string& route, F handler) {
-        app.del(normalizePath(route), handler);
+    RouteHandler Group::del(const std::string& route, F handler) {
+        return app.del(normalizePath(route), handler, groupMiddlewares);
     }
 
     template <typename F>
-    void Group::html(const std::string& route, F handler) {
-        app.html(normalizePath(route), handler);
+    RouteHandler Group::html(const std::string& route, F handler) {
+        return app.html(normalizePath(route), handler, groupMiddlewares);
     }
 }
 )";

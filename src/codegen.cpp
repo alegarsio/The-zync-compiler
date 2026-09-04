@@ -30,7 +30,7 @@ static const std::unordered_set<std::string> cppKeywords = {
 
 static std::string sanitizeName(const std::string &name)
 {
-    if (name == "Ok" || name == "Err" || name == "Result" || name == "Tuple" || name == "_" || name == "auto" || name == "Task")
+    if (name == "Ok" || name == "Err" || name == "Result" || name == "Tuple" || name == "_" || name == "auto" || name == "Task" || name == "any")
     {
         return name;
     }
@@ -148,6 +148,21 @@ std::string CodeGen::convertType(const std::string &zyType)
 {
     if (zyType.empty())
         return "";
+
+    if (zyType == "Request" || zyType == "ZyncCrow::Request")
+    {
+        return "ZyncCrow::Request";
+    }
+
+    if (zyType == "Response" || zyType == "ZyncCrow::Response")
+    {
+        return "ZyncCrow::Response";
+    }
+
+    if (zyType == "any")
+    {
+        return "std::any";
+    }
 
     if (zyType == "var" || zyType == "val" || zyType == "auto")
     {
@@ -1285,22 +1300,248 @@ std::string CodeGen::genFunction(const FunctionNode *fn, int indentLevel, const 
 
     out << " {\n";
 
-    bool hasExplicitReturn = false;
+    if (fn->name == "main")
+    {
+        struct AnnotatedTarget {
+            std::string targetVar;
+            std::string action;
+            std::vector<std::string> args;
+            std::string qualifiedName;
+            const FunctionNode* func;
+        };
+
+        std::vector<AnnotatedTarget> annotatedFuncs;
+        std::unordered_map<std::string, std::pair<std::string, std::vector<std::string>>> modGroups;
+
+        if (root)
+        {
+            for (const auto &mod : root->modules)
+            {
+                for (const auto &attr : mod->attributes)
+                {
+                    if (attr.action == "group" || attr.target.find(".group") != std::string::npos)
+                    {
+                        std::string baseApp = attr.target;
+                        size_t dotPos = baseApp.find(".group");
+                        if (dotPos != std::string::npos)
+                        {
+                            baseApp = baseApp.substr(0, dotPos);
+                        }
+                        modGroups[mod->name] = { baseApp, attr.args };
+                    }
+                }
+            }
+
+            for (const auto &f : root->functions)
+            {
+                for (const auto &attr : f->attributes)
+                {
+                    annotatedFuncs.push_back({ attr.target, attr.action, attr.args, "::" + sanitizeName(f->name), f.get() });
+                }
+            }
+
+            for (const auto &pkg : root->packages)
+            {
+                for (const auto &m : pkg->members)
+                {
+                    if (auto f = dynamic_cast<const FunctionNode *>(m.get()))
+                    {
+                        std::string qName = (pkg->name == "main")
+                            ? "::" + sanitizeName(f->name)
+                            : "::" + sanitizeName(pkg->name) + "::" + sanitizeName(f->name);
+                        for (const auto &attr : f->attributes)
+                        {
+                            annotatedFuncs.push_back({ attr.target, attr.action, attr.args, qName, f });
+                        }
+                    }
+                }
+            }
+
+            for (const auto &mod : root->modules)
+            {
+                std::string modGroupVar = "";
+                auto mgIt = modGroups.find(mod->name);
+                if (mgIt != modGroups.end())
+                {
+                    modGroupVar = "__grp_" + sanitizeName(mod->name);
+                }
+
+                for (const auto &m : mod->members)
+                {
+                    if (auto f = dynamic_cast<const FunctionNode *>(m.get()))
+                    {
+                        std::string qName = "::" + sanitizeName(mod->name) + "::" + sanitizeName(f->name);
+                        for (const auto &attr : f->attributes)
+                        {
+                            std::string tVar = attr.target;
+                            std::string act = attr.action;
+                            if (act.empty() && !modGroupVar.empty())
+                            {
+                                act = tVar;
+                                tVar = modGroupVar;
+                            }
+                            annotatedFuncs.push_back({ tVar, act, attr.args, qName, f });
+                        }
+                    }
+                }
+            }
+        }
+
+        std::unordered_set<const FunctionNode *> injectedFuncs;
+        std::unordered_set<std::string> instantiatedGroups;
+        bool hasExplicitReturn = false;
+
+        for (const auto &stmt : fn->body)
+        {
+            if (dynamic_cast<const ReturnNode *>(stmt.get()))
+            {
+                hasExplicitReturn = true;
+            }
+
+            out << genStatement(stmt.get(), indentLevel + 1);
+
+            if (auto varDecl = dynamic_cast<const VariableDeclNode *>(stmt.get()))
+            {
+                if (root)
+                {
+                    for (const auto &mod : root->modules)
+                    {
+                        auto mgIt = modGroups.find(mod->name);
+                        if (mgIt != modGroups.end() && mgIt->second.first == varDecl->name)
+                        {
+                            std::string gVar = "__grp_" + sanitizeName(mod->name);
+                            if (instantiatedGroups.find(gVar) == instantiatedGroups.end())
+                            {
+                                out << ind << "    auto " << gVar << " = " << varDecl->name << ".group(";
+                                for (size_t ai = 0; ai < mgIt->second.second.size(); ++ai)
+                                {
+                                    out << "\"" << mgIt->second.second[ai] << "\"";
+                                    if (ai + 1 < mgIt->second.second.size()) out << ", ";
+                                }
+                                out << ");\n";
+                                instantiatedGroups.insert(gVar);
+
+                                for (const auto &target : annotatedFuncs)
+                                {
+                                    if (target.targetVar == gVar)
+                                    {
+                                        out << ind << "    " << target.targetVar << "." << target.action << "(";
+                                        for (const auto &arg : target.args)
+                                        {
+                                            out << "\"" << arg << "\", ";
+                                        }
+                                        out << "[=](";
+                                        for (size_t pi = 0; pi < target.func->params.size(); ++pi)
+                                        {
+                                            std::string pType = convertType(target.func->params[pi].type);
+                                            if (pType == "ZyncCrow::Request" || pType == "Request")
+                                            {
+                                                out << "const ZyncCrow::Request& p" << pi;
+                                            }
+                                            else
+                                            {
+                                                out << pType << " p" << pi;
+                                            }
+                                            if (pi + 1 < target.func->params.size()) out << ", ";
+                                        }
+                                        out << ") { return " << target.qualifiedName << "(";
+                                        for (size_t pi = 0; pi < target.func->params.size(); ++pi)
+                                        {
+                                            out << "p" << pi;
+                                            if (pi + 1 < target.func->params.size()) out << ", ";
+                                        }
+                                        out << "); });\n";
+                                        injectedFuncs.insert(target.func);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                for (const auto &target : annotatedFuncs)
+                {
+                    if (target.targetVar == varDecl->name)
+                    {
+                        out << ind << "    " << target.targetVar << "." << target.action << "(";
+                        for (const auto &arg : target.args)
+                        {
+                            out << "\"" << arg << "\", ";
+                        }
+                        out << "[=](";
+                        for (size_t pi = 0; pi < target.func->params.size(); ++pi)
+                        {
+                            std::string pType = convertType(target.func->params[pi].type);
+                            if (pType == "ZyncCrow::Request" || pType == "Request")
+                            {
+                                out << "const ZyncCrow::Request& p" << pi;
+                            }
+                            else
+                            {
+                                out << pType << " p" << pi;
+                            }
+                            if (pi + 1 < target.func->params.size()) out << ", ";
+                        }
+                        out << ") { return " << target.qualifiedName << "(";
+                        for (size_t pi = 0; pi < target.func->params.size(); ++pi)
+                        {
+                            out << "p" << pi;
+                            if (pi + 1 < target.func->params.size()) out << ", ";
+                        }
+                        out << "); });\n";
+                        injectedFuncs.insert(target.func);
+                    }
+                }
+            }
+        }
+
+        for (const auto &target : annotatedFuncs)
+        {
+            if (injectedFuncs.find(target.func) == injectedFuncs.end())
+            {
+                out << ind << "    " << target.targetVar << "." << target.action << "(";
+                for (const auto &arg : target.args)
+                {
+                    out << "\"" << arg << "\", ";
+                }
+                out << "[=](";
+                for (size_t pi = 0; pi < target.func->params.size(); ++pi)
+                {
+                    std::string pType = convertType(target.func->params[pi].type);
+                    if (pType == "ZyncCrow::Request" || pType == "Request")
+                    {
+                        out << "const ZyncCrow::Request& p" << pi;
+                    }
+                    else
+                    {
+                        out << pType << " p" << pi;
+                    }
+                    if (pi + 1 < target.func->params.size()) out << ", ";
+                }
+                out << ") { return " << target.qualifiedName << "(";
+                for (size_t pi = 0; pi < target.func->params.size(); ++pi)
+                {
+                    out << "p" << pi;
+                    if (pi + 1 < target.func->params.size()) out << ", ";
+                }
+                out << "); });\n";
+            }
+        }
+
+        if (!hasExplicitReturn)
+        {
+            out << ind << "    return 0;\n";
+        }
+        out << ind << "}\n";
+        return out.str();
+    }
+
     for (const auto &stmt : fn->body)
     {
-        if (dynamic_cast<const ReturnNode *>(stmt.get()))
-        {
-            hasExplicitReturn = true;
-        }
         out << genStatement(stmt.get(), indentLevel + 1);
     }
 
-    if (fn->name == "main" && !hasExplicitReturn)
-    {
-        out << ind << "    return 0;\n";
-    }
     out << ind << "}\n";
-
     return out.str();
 }
 
@@ -1947,6 +2188,7 @@ std::string CodeGen::generate()
     fullCode << "#include <set>\n";
     fullCode << "#include <future>\n";
     fullCode << "#include <type_traits>\n";
+    fullCode << "#include <any>\n";
     if (needsMap)
         fullCode << "#include <map>\n";
 
@@ -1954,6 +2196,11 @@ std::string CodeGen::generate()
 
     fullCode << "template <typename T>\n";
     fullCode << "using Task = std::future<T>;\n\n";
+
+    fullCode << "template <typename T>\n";
+    fullCode << "inline T cast_any(const std::any& a) {\n";
+    fullCode << "    return std::any_cast<T>(a);\n";
+    fullCode << "}\n\n";
 
     fullCode << "template <typename T, typename E>\n";
     fullCode << "struct Result {\n";

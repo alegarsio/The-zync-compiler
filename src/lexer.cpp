@@ -38,6 +38,31 @@ std::vector<Token> Lexer::tokenize() {
 
         char c = peek();
 
+        if (c == '#') {
+            get();
+            tokens.push_back({TokenType::HASH, "#"});
+            continue;
+        }
+
+        if (c == '$' && pos + 1 < src.size() && src[pos + 1] == '"') {
+            get();
+            get();
+            std::string str;
+            while (peek() != '\0') {
+                if (peek() == '\\' && pos + 1 < src.size()) {
+                    str += get();
+                    str += get();
+                } else if (peek() == '"') {
+                    get();
+                    break;
+                } else {
+                    str += get();
+                }
+            }
+            tokens.push_back({TokenType::INTERPOLATED_STRING, str});
+            continue;
+        }
+
         if (c == '@') {
             if (pos + 1 < src.size() && src[pos + 1] == 'c' && (pos + 2 >= src.size() || !std::isalpha(static_cast<unsigned char>(src[pos + 2])))) {
                 get();
