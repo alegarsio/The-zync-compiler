@@ -8,6 +8,7 @@ enum class TokenType {
     IDENTIFIER,
     NUMBER_LITERAL,
     STRING_LITERAL,
+    INTERPOLATED_STRING,
     CHAR_LITERAL,
     PKG,
     MOD,
@@ -70,6 +71,7 @@ enum class TokenType {
     RBRACE,
     LBRACKET,
     RBRACKET,
+    HASH,
     UNKNOWN,
     AT_CPP_HEADER,
     AT_C_HEADER

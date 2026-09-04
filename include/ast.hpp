@@ -24,6 +24,14 @@ struct ASTNode {
 
 struct ExpressionNode : public ASTNode {};
 
+struct AttributeNode {
+    std::string target;
+    std::string action;
+    std::vector<std::string> args;
+};
+
+using Attribute = AttributeNode;
+
 struct LiteralNode : public ExpressionNode {
     std::string value;
     LiteralType litType;
@@ -72,6 +80,8 @@ struct Parameter {
     std::string type;
 };
 
+using Param = Parameter;
+
 struct StatementNode : public ASTNode {
     int lineNumber = 1;
     virtual ~StatementNode() = default;
@@ -89,14 +99,26 @@ struct LambdaNode : public ExpressionNode {
     std::vector<std::unique_ptr<StatementNode>> blockBody;
 
     LambdaNode() : returnType(""), isExpressionBody(false) {}
+    LambdaNode(std::vector<Parameter> p, const std::string& ret, std::vector<std::unique_ptr<StatementNode>> body)
+        : params(std::move(p)), returnType(ret), isExpressionBody(false), exprBody(nullptr), blockBody(std::move(body)) {}
+    LambdaNode(std::vector<Parameter> p, const std::string& ret, std::unique_ptr<ExpressionNode> expr)
+        : params(std::move(p)), returnType(ret), isExpressionBody(true), exprBody(std::move(expr)), blockBody() {}
 };
 
 struct ArrayLiteralNode : public ExpressionNode {
     std::vector<std::unique_ptr<ExpressionNode>> elements;
+
+    ArrayLiteralNode() = default;
+    explicit ArrayLiteralNode(std::vector<std::unique_ptr<ExpressionNode>> elems)
+        : elements(std::move(elems)) {}
 };
 
 struct MapLiteralNode : public ExpressionNode {
     std::vector<std::pair<std::unique_ptr<ExpressionNode>, std::unique_ptr<ExpressionNode>>> entries;
+
+    MapLiteralNode() = default;
+    explicit MapLiteralNode(std::vector<std::pair<std::unique_ptr<ExpressionNode>, std::unique_ptr<ExpressionNode>>> e)
+        : entries(std::move(e)) {}
 };
 
 struct IndexAccessNode : public ExpressionNode {
@@ -143,6 +165,10 @@ struct MatchExprNode : public ExpressionNode {
 struct MatchNode : public StatementNode {
     std::unique_ptr<ExpressionNode> target;
     std::vector<MatchArm> arms;
+
+    MatchNode() = default;
+    MatchNode(std::unique_ptr<ExpressionNode> t, std::vector<MatchArm> a)
+        : target(std::move(t)), arms(std::move(a)) {}
 };
 
 struct VariableDeclNode : public StatementNode {
@@ -155,6 +181,8 @@ struct VariableDeclNode : public StatementNode {
 
     VariableDeclNode(const std::string& t, const std::string& n, std::unique_ptr<ExpressionNode> v, bool comptime = false, bool isMut = true, Visibility vis = Visibility::PRIVATE)
         : type(t), name(n), value(std::move(v)), isComptime(comptime), isMutable(isMut), visibility(vis) {}
+    VariableDeclNode(const std::string& n, const std::string& t, std::unique_ptr<ExpressionNode> v, bool isMut = true)
+        : type(t), name(n), value(std::move(v)), isComptime(false), isMutable(isMut), visibility(Visibility::PRIVATE) {}
 };
 
 struct AssignmentNode : public StatementNode {
@@ -192,6 +220,8 @@ struct PrintNode : public StatementNode {
     std::unique_ptr<ExpressionNode> argument;
 
     PrintNode(bool println, std::unique_ptr<ExpressionNode> arg)
+        : isPrintln(println), argument(std::move(arg)) {}
+    PrintNode(std::unique_ptr<ExpressionNode> arg, bool println)
         : isPrintln(println), argument(std::move(arg)) {}
 };
 
@@ -236,18 +266,37 @@ struct ForNode : public StatementNode {
     std::unique_ptr<ExpressionNode> condition;
     std::unique_ptr<StatementNode> increment;
     std::vector<std::unique_ptr<StatementNode>> body;
+
+    ForNode() = default;
+
+    explicit ForNode(std::vector<std::unique_ptr<StatementNode>> b)
+        : kind(ForKind::INFINITE), iteratorVar(""), iterable(nullptr), init(nullptr), condition(nullptr), increment(nullptr), body(std::move(b)) {}
+
+    ForNode(std::unique_ptr<ExpressionNode> cond, std::vector<std::unique_ptr<StatementNode>> b)
+        : kind(ForKind::CONDITIONAL), iteratorVar(""), iterable(nullptr), init(nullptr), condition(std::move(cond)), increment(nullptr), body(std::move(b)) {}
+
+    ForNode(const std::string& iter, std::unique_ptr<ExpressionNode> itExpr, std::vector<std::unique_ptr<StatementNode>> b)
+        : kind(ForKind::FOR_RANGE), iteratorVar(iter), iterable(std::move(itExpr)), init(nullptr), condition(nullptr), increment(nullptr), body(std::move(b)) {}
 };
 
-struct IfBranch {
+struct ElseIfBranch {
     std::unique_ptr<ExpressionNode> condition;
     std::vector<std::unique_ptr<StatementNode>> body;
 };
 
+using IfBranch = ElseIfBranch;
+
 struct IfNode : public StatementNode {
     std::unique_ptr<ExpressionNode> condition;
     std::vector<std::unique_ptr<StatementNode>> thenBody;
-    std::vector<IfBranch> elseIfBranches;
+    std::vector<ElseIfBranch> elseIfBranches;
     std::vector<std::unique_ptr<StatementNode>> elseBody;
+
+    IfNode() = default;
+
+    IfNode(std::unique_ptr<ExpressionNode> cond, std::vector<std::unique_ptr<StatementNode>> thenB,
+           std::vector<ElseIfBranch> elseIfs, std::vector<std::unique_ptr<StatementNode>> elseB)
+        : condition(std::move(cond)), thenBody(std::move(thenB)), elseIfBranches(std::move(elseIfs)), elseBody(std::move(elseB)) {}
 };
 
 struct RecordField {
@@ -276,19 +325,23 @@ struct EnumNode : public ASTNode {
     std::vector<EnumVariant> variants;
     Visibility visibility;
 
-    explicit EnumNode(const std::string& n, const std::string& uType = "", Visibility vis = Visibility::PRIVATE)
+    explicit EnumNode(const std::string& n, Visibility vis = Visibility::PRIVATE)
+        : name(n), underlyingType(""), visibility(vis) {}
+    EnumNode(const std::string& n, const std::string& uType, Visibility vis = Visibility::PRIVATE)
         : name(n), underlyingType(uType), visibility(vis) {}
 };
 
-struct TraitMethodSignature {
+struct TraitMethod {
     std::string name;
     std::vector<Parameter> params;
     std::string returnType;
 };
 
+using TraitMethodSignature = TraitMethod;
+
 struct TraitNode : public ASTNode {
     std::string name;
-    std::vector<TraitMethodSignature> methods;
+    std::vector<TraitMethod> methods;
     Visibility visibility;
 
     explicit TraitNode(const std::string& n, Visibility vis = Visibility::PRIVATE)
@@ -303,24 +356,29 @@ struct FunctionNode : public ASTNode {
     bool isComptime;
     bool isAsync;
     Visibility visibility;
+    std::vector<AttributeNode> attributes;
 
+    FunctionNode(const std::string& n, Visibility vis = Visibility::PRIVATE)
+        : name(n), returnType("void"), isComptime(false), isAsync(false), visibility(vis) {}
     FunctionNode(const std::string& n, const std::string& retType, bool comptime = false, bool asyncFlag = false, Visibility vis = Visibility::PRIVATE)
         : name(n), returnType(retType), isComptime(comptime), isAsync(asyncFlag), visibility(vis) {}
 };
 
-struct TestBlockNode : public ASTNode {
+struct TestNode : public ASTNode {
     std::string name;
     std::vector<std::unique_ptr<StatementNode>> body;
 
-    explicit TestBlockNode(const std::string& n) : name(n) {}
+    explicit TestNode(const std::string& n) : name(n) {}
 };
+
+using TestBlockNode = TestNode;
 
 struct ImplNode : public ASTNode {
     std::string traitName;
     std::string targetName;
     std::vector<std::unique_ptr<FunctionNode>> methods;
 
-    ImplNode(const std::string& traitN, const std::string& targetN)
+    ImplNode(const std::string& targetN, const std::string& traitN = "")
         : traitName(traitN), targetName(targetN) {}
 };
 
@@ -343,6 +401,7 @@ struct ModNode : public ASTNode {
     std::string name;
     std::vector<std::unique_ptr<ASTNode>> members;
     Visibility visibility;
+    std::vector<AttributeNode> attributes;
 
     explicit ModNode(const std::string& n, Visibility vis = Visibility::PRIVATE)
         : name(n), visibility(vis) {}
@@ -365,7 +424,7 @@ struct ProgramNode : public ASTNode {
     std::vector<std::unique_ptr<RecordNode>> records;
     std::vector<std::unique_ptr<ImplNode>> impls;
     std::vector<std::unique_ptr<FunctionNode>> functions;
-    std::vector<std::unique_ptr<TestBlockNode>> tests;
+    std::vector<std::unique_ptr<TestNode>> tests;
 
     ProgramNode() : packageName("") {}
 };
